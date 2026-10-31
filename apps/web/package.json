@@ -1,0 +1,30 @@
+{
+  "name": "@folio/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host localhost",
+    "build": "vite build",
+    "preview": "vite preview --host localhost"
+  },
+  "dependencies": {
+    "@folio/shared": "1.0.0",
+    "@tanstack/react-query": "5.104.5",
+    "lucide-react": "0.468.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "7.18.4",
+    "recharts": "3.10.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.27",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "4.7.0",
+    "autoprefixer": "10.4.22",
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.18",
+    "vite": "6.4.5",
+    "vite-plugin-pwa": "2.0.0"
+  }
+}

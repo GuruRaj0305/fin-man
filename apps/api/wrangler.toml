@@ -1,0 +1,21 @@
+name = "folio-finance-api"
+main = "src/index.ts"
+compatibility_date = "2025-10-01"
+workers_dev = false
+send_metrics = false
+
+# Production D1 database. Local development remains isolated by --local.
+# The database ID is a resource identifier, not a secret.
+[[d1_databases]]
+binding = "DB"
+database_name = "folio-finance"
+database_id = "f16c77c7-bd64-479d-8f4d-109afbf727c8"
+migrations_dir = "migrations"
+
+[vars]
+# Local HTTP settings remain in the gitignored .dev.vars file.
+APP_ORIGIN = "https://fin.gururajhr.in"
+ENVIRONMENT = "production"
+
+# Pages forwards /api/* through its API service binding; no public Worker route
+# or separate API origin is required. The custom hostname attaches to Pages.

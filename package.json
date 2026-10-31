@@ -1,0 +1,46 @@
+{
+  "name": "folio-finance",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,green \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
+    "build": "npm run typecheck && npm run build -w apps/web",
+    "typecheck": "tsc -p apps/api/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "db:migrate:local": "npm run db:migrate:local -w apps/api",
+    "db:seed:local": "node scripts/local-db.mjs seed",
+    "db:reset:local": "node scripts/local-db.mjs reset",
+    "local:init": "node scripts/init-local.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.19.0",
+    "concurrently": "9.2.1",
+    "eslint": "9.39.1",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "16.5.0",
+    "miniflare": "4.20260114.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.2",
+    "vitest": "3.2.7",
+    "vite": "6.4.5",
+    "@cloudflare/workers-types": "4.20260114.0"
+  },
+  "type": "module",
+  "overrides": {
+    "vite": "6.4.5"
+  }
+}

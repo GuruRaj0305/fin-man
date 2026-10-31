@@ -1,0 +1,68 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Local environment and Cloudflare secrets (keep setup examples)
+.env
+.env.*
+!.env.example
+!.env.*.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+!.dev.vars.*.example
+.wrangler/
+
+# Local runtime state, financial exports, and databases
+.local/
+/backups/
+/exports/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dump
+
+# Test reports and coverage
+test-results/
+playwright-report/
+playwright/.cache/
+coverage/
+.nyc_output/
+*.lcov
+
+# Logs and tool caches
+*.log
+.cache/
+.vite/
+.eslintcache
+.stylelintcache
+.npm/
+
+# Local credentials and private keys
+/.aws/
+/.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Local agent settings
+/.agents/
+/.codex/
+
+# Editors and operating-system files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

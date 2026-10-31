@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "lib": ["ES2022", "DOM"], "types": ["node", "@cloudflare/workers-types"] },
+  "include": [
+    "apps/api/tests",
+    "packages/shared/src",
+    "tests",
+    "vitest.config.ts",
+    "playwright.config.ts"
+  ]
+}

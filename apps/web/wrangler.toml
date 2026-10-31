@@ -1,0 +1,16 @@
+name = "folio-finance"
+pages_build_output_dir = "./dist"
+compatibility_date = "2025-10-01"
+send_metrics = false
+
+# Production hostname: fin.gururajhr.in, attached through Pages Custom domains.
+# Pages manages this hostname; a Workers custom_domain route would target the
+# API-only Worker instead of the frontend and is not used by this deployment.
+[[services]]
+binding = "API"
+service = "folio-finance-api"
+
+# Do not give future preview branches access to the production API/database.
+# Configure an isolated API before enabling an actual staging environment.
+[env.preview]
+services = []
