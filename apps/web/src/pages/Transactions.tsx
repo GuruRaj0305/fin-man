@@ -15,7 +15,7 @@ import {
 } from '../components/ui';
 import { TransactionDialog } from '../components/forms';
 export function Transactions() {
-  const { data } = useWorkspace(),
+  const { data, user } = useWorkspace(),
     [search, setSearch] = useState(''),
     deferred = useDeferredValue(search),
     [from, setFrom] = useState(''),
@@ -37,7 +37,7 @@ export function Transactions() {
     ...(type ? { type } : {}),
   });
   const transactions = useQuery({
-    queryKey: ['transactions', query.toString()],
+    queryKey: ['transactions', user.id, query.toString()],
     queryFn: () => api<Page<Transaction>>(`/transactions?${query}`),
   });
   const update = (setter: (v: string) => void, value: string) => {

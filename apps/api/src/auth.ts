@@ -1,6 +1,7 @@
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Context } from 'hono';
 import type { Env } from './types';
+import type { User } from '@folio/shared';
 
 const enc = new TextEncoder();
 function hex(bytes: ArrayBuffer | Uint8Array): string {
@@ -78,7 +79,7 @@ function cookieOptions(c: Context<Env>) {
 function cookieName(c: Context<Env>) {
   return c.env.ENVIRONMENT === 'development' ? 'folio_session' : '__Host-folio_session';
 }
-export async function createSession(c: Context<Env>): Promise<void> {
+export async function createSession(c: Context<Env>, userId: number): Promise<void> {
   const token = hex(crypto.getRandomValues(new Uint8Array(32))),
     now = Math.floor(Date.now() / 1000);
   await c.env.DB.batch([
@@ -87,8 +88,8 @@ export async function createSession(c: Context<Env>): Promise<void> {
       now,
     ),
     c.env.DB.prepare(
-      'INSERT INTO sessions(token_hash,user_id,expires_at,absolute_expires_at) VALUES(?,1,?,?)',
-    ).bind(await digest(token), now + IDLE, now + ABSOLUTE),
+      'INSERT INTO sessions(token_hash,user_id,expires_at,absolute_expires_at) VALUES(?,?,?,?)',
+    ).bind(await digest(token), userId, now + IDLE, now + ABSOLUTE),
   ]);
   setCookie(
     c,
@@ -97,7 +98,7 @@ export async function createSession(c: Context<Env>): Promise<void> {
     cookieOptions(c),
   );
 }
-export async function readSession(c: Context<Env>): Promise<string | null> {
+export async function readSession(c: Context<Env>): Promise<{ key: string; user: User } | null> {
   const raw = getCookie(c, cookieName(c));
   if (!raw) return null;
   const [token, signature] = raw.split('.');
@@ -110,10 +111,12 @@ export async function readSession(c: Context<Env>): Promise<string | null> {
   const key = await digest(token),
     now = Math.floor(Date.now() / 1000);
   const s = await c.env.DB.prepare(
-    'SELECT * FROM sessions WHERE token_hash=? AND expires_at>? AND absolute_expires_at>?',
+    `SELECT s.expires_at, s.absolute_expires_at, u.id, u.name, u.email, u.role,
+      u.created_at, u.last_login_at FROM sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token_hash=? AND s.expires_at>? AND s.absolute_expires_at>?`,
   )
     .bind(key, now, now)
-    .first<{ expires_at: number; absolute_expires_at: number }>();
+    .first<User & { expires_at: number; absolute_expires_at: number }>();
   if (!s) return null;
   const expires = Math.min(now + IDLE, s.absolute_expires_at);
   // Refresh at most once per hour to avoid writes on every authenticated read.
@@ -123,7 +126,10 @@ export async function readSession(c: Context<Env>): Promise<string | null> {
       .run();
     setCookie(c, cookieName(c), raw, { ...cookieOptions(c), maxAge: expires - now });
   }
-  return key;
+  const { expires_at: _idle, absolute_expires_at: _absolute, ...user } = s;
+  void _idle;
+  void _absolute;
+  return { key, user };
 }
 export function clearSession(c: Context<Env>): void {
   deleteCookie(c, cookieName(c), {

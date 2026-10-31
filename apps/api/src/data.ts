@@ -26,23 +26,57 @@ export const tables = [
 ] as const;
 export type Table = (typeof tables)[number];
 export type Row = Record<string, unknown>;
-export function decode(table: Table, row: Row): Row {
+const referenceKeys = new Set([
+  'id',
+  'account_id',
+  'to_account_id',
+  'category_id',
+  'loan_id',
+  'transaction_id',
+  'holding_id',
+  'goal_id',
+]);
+// The owner's existing IDs stay unchanged. Other workspaces use a storage-only
+// namespace, so portable backups and default category IDs can safely overlap.
+export function storageId(userId: number, id: string): string {
+  return userId === 1 ? id : `${userId}:${id}`;
+}
+function encode(userId: number, row: Row): Row {
+  return Object.fromEntries([
+    ...Object.entries(row).map(([key, value]) => [
+      key,
+      referenceKeys.has(key) && typeof value === 'string' ? storageId(userId, value) : value,
+    ]),
+    ['user_id', userId],
+  ]);
+}
+export function decode(table: Table, row: Row, userId: number): Row {
+  delete row.user_id;
+  if (userId !== 1)
+    for (const key of referenceKeys)
+      if (typeof row[key] === 'string') row[key] = row[key].slice(`${userId}:`.length);
   if (table === 'accounts' || table === 'categories') row.archived = !!row.archived;
   if (table === 'transactions') row.tags = JSON.parse(String(row.tags));
   return row;
 }
-export async function loadData(db: D1Database): Promise<Dataset> {
-  const results = await db.batch<Row>(tables.map((t) => db.prepare(`SELECT * FROM ${t}`)));
+export async function loadData(db: D1Database, userId: number): Promise<Dataset> {
+  const results = await db.batch<Row>(
+    tables.map((t) => db.prepare(`SELECT * FROM ${t} WHERE user_id=?`).bind(userId)),
+  );
   return datasetSchema.parse(
-    Object.fromEntries(tables.map((t, i) => [t, results[i].results.map((r) => decode(t, r))])),
+    Object.fromEntries(
+      tables.map((t, i) => [t, results[i].results.map((r) => decode(t, r, userId))]),
+    ),
   );
 }
 export function insert(
   db: D1Database,
+  userId: number,
   table: Table,
   row: Row,
   upsert = false,
 ): D1PreparedStatement {
+  row = encode(userId, row);
   const keys = Object.keys(row),
     values = keys.map((k) =>
       typeof row[k] === 'boolean'
@@ -58,7 +92,7 @@ export function insert(
           ? ` ON CONFLICT(id) DO UPDATE SET ${keys
               .filter((k) => k !== 'id')
               .map((k) => `${k}=excluded.${k}`)
-              .join(',')}`
+              .join(',')} WHERE ${table}.user_id=excluded.user_id`
           : ''
       }`,
     )
@@ -68,11 +102,13 @@ export function insert(
  * stay below D1's 2 MB value limit; all statements still commit in one atomic batch. */
 export function bulkInsert(
   db: D1Database,
+  userId: number,
   table: Table,
   rows: Row[],
   upsert = false,
 ): D1PreparedStatement[] {
   if (!rows.length) return [];
+  rows = rows.map((row) => encode(userId, row));
   const keys = Object.keys(rows[0]),
     chunks: Row[][] = [];
   let chunk: Row[] = [],
@@ -94,7 +130,7 @@ export function bulkInsert(
       ? ` ON CONFLICT(id) DO UPDATE SET ${keys
           .filter((k) => k !== 'id')
           .map((k) => `${k}=excluded.${k}`)
-          .join(',')}`
+          .join(',')} WHERE ${table}.user_id=excluded.user_id`
       : ''
   }`;
   return chunks.map((rows) => db.prepare(sql).bind(JSON.stringify(rows)));

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type FormEvent } from 'react';
-import { NavLink, Link, Route, Routes, useLocation } from 'react-router-dom';
+import { NavLink, Link, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import {
@@ -23,8 +23,9 @@ import {
   WifiOff,
   Download,
   Loader2,
+  Users,
 } from 'lucide-react';
-import type { Dataset } from '@folio/shared';
+import type { Dataset, AuthStatus, User } from '@folio/shared';
 import { api, useSnapshot, useOverview, today, type Overview } from './lib';
 import { Loading, ErrorState } from './components/ui';
 import { TransactionDialog } from './components/forms';
@@ -35,8 +36,10 @@ import { Investments, InvestmentDetail } from './pages/Investments';
 import { Goals, Budgets } from './pages/Planning';
 import { Reports } from './pages/Reports';
 import { SettingsPage } from './pages/Settings';
+import { AdminUsers } from './pages/AdminUsers';
 
 type Workspace = {
+  user: User;
   data: Dataset;
   view: Overview;
   current: Overview;
@@ -66,7 +69,7 @@ export function App() {
   const qc = useQueryClient(),
     auth = useQuery({
       queryKey: ['auth'],
-      queryFn: () => api<{ needs_setup: boolean; authenticated: boolean }>('/auth/status'),
+      queryFn: () => api<AuthStatus>('/auth/status'),
       retry: false,
     }),
     [online, setOnline] = useState(navigator.onLine);
@@ -87,7 +90,9 @@ export function App() {
     const on = () => setOnline(true),
       off = () => setOnline(false),
       expired = () => {
-        qc.setQueryData(['auth'], { needs_setup: false, authenticated: false });
+        qc.setQueryData<AuthStatus>(['auth'], (previous) =>
+          previous ? { ...previous, authenticated: false, user: null } : previous,
+        );
         qc.removeQueries({ predicate: (q) => q.queryKey[0] !== 'auth' });
       };
     window.addEventListener('online', on);
@@ -136,10 +141,19 @@ export function App() {
             retry={() => void auth.refetch()}
           />
         </div>
-      ) : auth.data.authenticated ? (
-        <WorkspaceApp theme={theme} setTheme={setTheme} />
+      ) : auth.data.authenticated && auth.data.user ? (
+        auth.data.user.email === null ? (
+          <CompleteProfile user={auth.data.user} />
+        ) : (
+          <WorkspaceApp
+            key={auth.data.user.id}
+            user={auth.data.user}
+            theme={theme}
+            setTheme={setTheme}
+          />
+        )
       ) : (
-        <Auth setup={auth.data.needs_setup} />
+        <Auth status={auth.data} />
       )}
     </>
   );
@@ -156,23 +170,31 @@ function Brand() {
     </Link>
   );
 }
-function Auth({ setup }: { setup: boolean }) {
+function Auth({ status }: { status: AuthStatus }) {
+  const setup = status.needs_setup;
+  const navigate = useNavigate();
   const qc = useQueryClient(),
     [error, setError] = useState(''),
-    [pending, setPending] = useState(false);
+    [pending, setPending] = useState(false),
+    [mode, setMode] = useState<'login' | 'register' | 'legacy'>('login');
+  const creating = setup || mode === 'register';
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     setError('');
-    if (setup && f.get('password') !== f.get('confirm')) {
+    if (creating && f.get('password') !== f.get('confirm')) {
       setError('Your passwords do not match');
       return;
     }
     setPending(true);
     try {
-      await api(setup ? '/auth/setup' : '/auth/login', 'POST', {
+      await api(setup ? '/auth/setup' : creating ? '/auth/register' : '/auth/login', 'POST', {
         password: String(f.get('password')),
+        ...(creating ? { name: String(f.get('name')) } : {}),
+        ...(mode === 'legacy' && !creating ? {} : { email: String(f.get('email')) }),
       });
+      qc.removeQueries({ predicate: (q) => q.queryKey[0] !== 'auth' });
+      navigate('/', { replace: true });
       await qc.invalidateQueries({ queryKey: ['auth'] });
     } catch (err) {
       setError((err as Error).message);
@@ -220,20 +242,40 @@ function Auth({ setup }: { setup: boolean }) {
           <Brand />
         </div>
         <form className="auth-form" onSubmit={submit}>
-          <div className="eyebrow">{setup ? 'YOUR NEXT CHAPTER' : 'WELCOME BACK'}</div>
-          <h2>{setup ? 'Make yourself at home.' : 'A little peace of mind.'}</h2>
-          <p>
+          <div className="eyebrow">{creating ? 'YOUR NEXT CHAPTER' : 'WELCOME BACK'}</div>
+          <h2>
             {setup
-              ? 'Set a password to create your private finance workspace. One person, one place for everything.'
-              : 'Sign in to pick up where you left off.'}
+              ? 'Make yourself at home.'
+              : creating
+                ? 'A workspace of your own.'
+                : 'A little peace of mind.'}
+          </h2>
+          <p>
+            {creating
+              ? 'Create your account for a private place to manage your finances.'
+              : mode === 'legacy'
+                ? 'Use your existing owner password. You can choose your login email next.'
+                : 'Sign in with your email and password.'}
           </p>
+          {creating && (
+            <label className="field">
+              <span>Your name</span>
+              <input name="name" autoComplete="name" required maxLength={120} />
+            </label>
+          )}
+          {(creating || mode !== 'legacy') && (
+            <label className="field">
+              <span>Email address</span>
+              <input name="email" type="email" autoComplete="username" required maxLength={254} />
+            </label>
+          )}
           <label className="field">
-            <span>{setup ? 'Create a password' : 'Password'}</span>
+            <span>{creating ? 'Create a password' : 'Password'}</span>
             <input
               name="password"
-              aria-label={setup ? 'Create a password' : 'Password'}
+              aria-label={creating ? 'Create a password' : 'Password'}
               type="password"
-              autoComplete={setup ? 'new-password' : 'current-password'}
+              autoComplete={creating ? 'new-password' : 'current-password'}
               required
               minLength={12}
               maxLength={128}
@@ -241,7 +283,7 @@ function Auth({ setup }: { setup: boolean }) {
               autoFocus
             />
           </label>
-          {setup && (
+          {creating && (
             <label className="field">
               <span>Confirm password</span>
               <input
@@ -262,15 +304,47 @@ function Auth({ setup }: { setup: boolean }) {
           )}
           <button className="btn primary auth-submit" disabled={pending || !navigator.onLine}>
             {pending ? <Loader2 size={18} className="spin" /> : null}
-            {pending ? 'Opening your workspace…' : setup ? 'Create my workspace' : 'Sign in'}
+            {pending ? 'Opening your workspace…' : creating ? 'Create my workspace' : 'Sign in'}
             <ArrowUpRight size={18} />
           </button>
+          {!setup && (
+            <div className="auth-options">
+              {(creating || status.registration_open) && (
+                <button
+                  type="button"
+                  className="text-btn"
+                  disabled={pending}
+                  onClick={() => {
+                    setMode(creating ? 'login' : 'register');
+                    setError('');
+                  }}
+                >
+                  {creating ? 'Already have an account? Sign in' : 'Create an account'}
+                </button>
+              )}
+              {status.legacy_owner && !creating && (
+                <button
+                  type="button"
+                  className="text-btn"
+                  disabled={pending}
+                  onClick={() => {
+                    setMode(mode === 'legacy' ? 'login' : 'legacy');
+                    setError('');
+                  }}
+                >
+                  {mode === 'legacy'
+                    ? 'Sign in with email'
+                    : 'Existing owner? Sign in with your password'}
+                </button>
+              )}
+            </div>
+          )}
           <div className="auth-reassurance">
             <ShieldCheck size={16} />
             <span>
-              No signups. No trackers. No distractions.
+              Your account. Your finances. Your pace.
               <br />
-              Your financial information stays in your own database.
+              Your financial records are private to your account.
             </span>
           </div>
         </form>
@@ -279,11 +353,78 @@ function Auth({ setup }: { setup: boolean }) {
     </main>
   );
 }
-function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string) => void }) {
-  const snapshot = useSnapshot(),
+function CompleteProfile({ user }: { user: User }) {
+  const qc = useQueryClient(),
+    [error, setError] = useState(''),
+    [pending, setPending] = useState(false);
+  return (
+    <main className="profile-layout">
+      <Brand />
+      <form
+        className="auth-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setError('');
+          setPending(true);
+          const form = new FormData(event.currentTarget);
+          try {
+            await api('/auth/profile', 'POST', {
+              name: String(form.get('name')),
+              email: String(form.get('email')),
+            });
+            await qc.invalidateQueries({ queryKey: ['auth'] });
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        <div className="eyebrow">YOUR EXISTING WORKSPACE</div>
+        <h2>Finish your account</h2>
+        <p>
+          Choose your name and login email. Your password and financial records are already here.
+          This account is the administrator.
+        </p>
+        <label className="field">
+          <span>Your name</span>
+          <input
+            name="name"
+            autoComplete="name"
+            defaultValue={user.name}
+            required
+            maxLength={120}
+          />
+        </label>
+        <label className="field">
+          <span>Email address</span>
+          <input name="email" type="email" autoComplete="username" required maxLength={254} />
+        </label>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <button className="btn primary auth-submit" disabled={pending || !navigator.onLine}>
+          {pending ? 'Saving…' : 'Save account details'}
+        </button>
+      </form>
+    </main>
+  );
+}
+function WorkspaceApp({
+  user,
+  theme,
+  setTheme,
+}: {
+  user: User;
+  theme: string;
+  setTheme: (v: string) => void;
+}) {
+  const snapshot = useSnapshot(user.id),
     [month, setMonth] = useState(today().slice(0, 7)),
-    overview = useOverview(month),
-    current = useOverview(today().slice(0, 7)),
+    overview = useOverview(month, user.id),
+    current = useOverview(today().slice(0, 7), user.id),
     [drawer, setDrawer] = useState(false),
     [quick, setQuick] = useState(false),
     [logoutError, setLogoutError] = useState(''),
@@ -305,7 +446,9 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
   const logout = async () => {
     try {
       await api('/auth/logout', 'POST', {});
-      qc.setQueryData(['auth'], { needs_setup: false, authenticated: false });
+      qc.setQueryData<AuthStatus>(['auth'], (previous) =>
+        previous ? { ...previous, authenticated: false, user: null } : previous,
+      );
       qc.removeQueries({ predicate: (q) => q.queryKey[0] !== 'auth' });
     } catch (e) {
       setLogoutError((e as Error).message);
@@ -313,7 +456,7 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
   };
   const name =
     nav.find((n) => (n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)))
-      ?.label ?? 'Overview';
+      ?.label ?? (location.pathname === '/admin/users' ? 'Admin monitor' : 'Overview');
   return (
     <div className="app-layout">
       {drawer && (
@@ -335,9 +478,10 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
           </button>
         </div>
         <div className="workspace-name">
-          <span className="workspace-avatar">Y</span>
+          <span className="workspace-avatar">{user.name.charAt(0).toUpperCase()}</span>
           <div>
-            Personal workspace<small>Just you & your future</small>
+            {user.name}
+            <small>{user.role === 'admin' ? 'Administrator' : 'Personal workspace'}</small>
           </div>
           <span className="tiny-dot" />
         </div>
@@ -366,6 +510,12 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
               <strong>Keep growing.</strong>
             </p>
           </div>
+          {user.role === 'admin' && (
+            <NavLink to="/admin/users">
+              <Users size={19} />
+              Admin monitor
+            </NavLink>
+          )}
           <NavLink to="/settings">
             <Settings size={19} />
             Settings
@@ -428,7 +578,7 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
             </button>
             <span className="header-divider" />
             <span className="user-avatar" aria-label="Your workspace">
-              Y
+              {user.name.charAt(0).toUpperCase()}
             </span>
           </div>
         </header>
@@ -447,6 +597,7 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
           ) : (
             <WorkspaceContext.Provider
               value={{
+                user,
                 data: snapshot.data,
                 view: overview.data,
                 current: current.data,
@@ -468,6 +619,16 @@ function WorkspaceApp({ theme, setTheme }: { theme: string; setTheme: (v: string
                 <Route path="/budgets" element={<Budgets />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route
+                  path="/admin/users"
+                  element={
+                    user.role === 'admin' ? (
+                      <AdminUsers />
+                    ) : (
+                      <ErrorState error={new Error('Administrator access is required.')} />
+                    )
+                  }
+                />
                 <Route
                   path="*"
                   element={

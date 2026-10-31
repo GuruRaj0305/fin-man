@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
 import { Miniflare } from 'miniflare';
-import { readFileSync } from 'node:fs';
+import { applyMigrations } from './database';
 import app from '../src/index';
 import { hashPassword, verifyPassword } from '../src/auth';
 import { tables } from '../src/data';
@@ -17,6 +17,8 @@ const env = () => ({
   ENVIRONMENT: 'development',
 });
 const password = 'a very private password';
+const ownerEmail = 'owner@example.test';
+const ownerCredentials = { name: 'Owner', email: ownerEmail, password };
 async function req(
   path: string,
   method = 'GET',
@@ -48,7 +50,7 @@ async function json<T>(path: string, method = 'GET', body?: unknown): Promise<T>
   return r.json() as Promise<T>;
 }
 async function setup() {
-  await json('/auth/setup', 'POST', { password });
+  await json('/auth/setup', 'POST', ownerCredentials);
 }
 async function bank(name = 'Checking', currency = 'INR') {
   return json<Account>('/accounts', 'POST', {
@@ -66,19 +68,7 @@ beforeAll(async () => {
     d1Databases: ['DB'],
   });
   db = (await mf.getD1Database('DB')) as unknown as D1Database;
-  const sql = readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
-  await db.batch(
-    sql
-      .split(';')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => db.prepare(s)),
-  );
-  await db
-    .prepare(
-      readFileSync(new URL('../migrations/0002_loan_payment_guard.sql', import.meta.url), 'utf8'),
-    )
-    .run();
+  await applyMigrations(db);
 });
 afterAll(async () => {
   await mf?.dispose();
@@ -94,7 +84,7 @@ beforeEach(async () => {
         db.prepare('DELETE FROM sessions'),
         db.prepare('DELETE FROM users'),
         db.prepare('DELETE FROM login_attempts'),
-        db.prepare("DELETE FROM categories WHERE id NOT LIKE 'cat_%'"),
+        db.prepare("DELETE FROM categories WHERE user_id<>1 OR id NOT LIKE 'cat_%'"),
         db.prepare('UPDATE categories SET archived=0'),
       ]),
   );
@@ -112,28 +102,31 @@ describe('password hashing', () => {
 describe('authentication and security', () => {
   it('allows setup exactly once and protects resources', async () => {
     expect((await req('/accounts')).status).toBe(401);
-    expect(await json('/auth/status')).toEqual({ needs_setup: true, authenticated: false });
+    expect(await json('/auth/status')).toEqual({
+      needs_setup: true,
+      authenticated: false,
+      legacy_owner: false,
+      registration_open: false,
+      user: null,
+    });
     await setup();
-    expect((await req('/auth/setup', 'POST', { password })).status).toBe(409);
+    expect((await req('/auth/setup', 'POST', ownerCredentials)).status).toBe(409);
     expect((await req('/accounts')).status).toBe(200);
     await json('/auth/logout', 'POST');
     expect((await req('/accounts')).status).toBe(401);
-    await json('/auth/login', 'POST', { password });
+    await json('/auth/login', 'POST', { email: ownerEmail, password });
     expect((await req('/accounts')).status).toBe(200);
   });
   it('rejects cross-origin writes, missing CSRF header and invalid JSON inputs', async () => {
     expect(
-      (await req('/auth/setup', 'POST', { password }, { headers: { 'X-Finance-Client': '' } }))
+      (await req('/auth/setup', 'POST', ownerCredentials, { headers: { 'X-Finance-Client': '' } }))
         .status,
     ).toBe(403);
     expect(
       (
-        await req(
-          '/auth/setup',
-          'POST',
-          { password },
-          { headers: { Origin: 'https://evil.example' } },
-        )
+        await req('/auth/setup', 'POST', ownerCredentials, {
+          headers: { Origin: 'https://evil.example' },
+        })
       ).status,
     ).toBe(403);
     expect((await req('/auth/setup', 'POST', { password: 'short' })).status).toBe(400);
@@ -141,12 +134,13 @@ describe('authentication and security', () => {
   it('locks repeated login failures in D1 and permits login after timeout', async () => {
     await setup();
     for (let n = 0; n < 5; n++)
-      expect((await req('/auth/login', 'POST', { password: 'incorrect password' })).status).toBe(
-        401,
-      );
-    expect((await req('/auth/login', 'POST', { password })).status).toBe(429);
+      expect(
+        (await req('/auth/login', 'POST', { email: ownerEmail, password: 'incorrect password' }))
+          .status,
+      ).toBe(401);
+    expect((await req('/auth/login', 'POST', { email: ownerEmail, password })).status).toBe(429);
     await db.prepare('UPDATE login_attempts SET locked_until=0,window_start=0').run();
-    expect((await req('/auth/login', 'POST', { password })).status).toBe(200);
+    expect((await req('/auth/login', 'POST', { email: ownerEmail, password })).status).toBe(200);
   });
   it('signs cookies, rejects tampering and expires sessions', async () => {
     await setup();
@@ -166,7 +160,7 @@ describe('authentication and security', () => {
           'X-Finance-Client': 'web',
           Origin: 'https://finance.example',
         },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(ownerCredentials),
       },
       { ...env(), ENVIRONMENT: 'production', APP_ORIGIN: 'https://finance.example' },
     );
@@ -192,7 +186,7 @@ describe('authentication and security', () => {
   it('changes password and revokes other sessions; logout everywhere revokes all', async () => {
     await setup();
     const first = cookie;
-    await json('/auth/login', 'POST', { password });
+    await json('/auth/login', 'POST', { email: ownerEmail, password });
     await json('/auth/password', 'POST', {
       current_password: password,
       new_password: 'the next private password',
@@ -200,9 +194,14 @@ describe('authentication and security', () => {
     expect((await req('/accounts', 'GET', undefined, { cookie: first })).status).toBe(401);
     await json('/auth/logout-all', 'POST');
     expect((await req('/accounts')).status).toBe(401);
-    expect((await req('/auth/login', 'POST', { password })).status).toBe(401);
+    expect((await req('/auth/login', 'POST', { email: ownerEmail, password })).status).toBe(401);
     expect(
-      (await req('/auth/login', 'POST', { password: 'the next private password' })).status,
+      (
+        await req('/auth/login', 'POST', {
+          email: ownerEmail,
+          password: 'the next private password',
+        })
+      ).status,
     ).toBe(200);
   });
 });

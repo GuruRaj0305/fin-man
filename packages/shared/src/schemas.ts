@@ -125,6 +125,34 @@ export const budgetInput = z
 export const budgetSchema = budgetInput.extend(base);
 export const passwordSchema = z.string().min(12, 'Use at least 12 characters').max(128);
 export const authInput = z.object({ password: passwordSchema }).strict();
+export const emailSchema = z.string().trim().toLowerCase().email().max(254);
+export const profileInput = z.object({ name: text, email: emailSchema }).strict();
+export const registrationInput = profileInput.extend({ password: passwordSchema }).strict();
+export const loginInput = z
+  .object({ email: emailSchema.optional(), password: passwordSchema })
+  .strict();
+export type User = {
+  id: number;
+  name: string;
+  email: string | null;
+  role: 'admin' | 'user';
+  created_at: string;
+  last_login_at: string | null;
+};
+export type AuthStatus = {
+  needs_setup: boolean;
+  legacy_owner: boolean;
+  registration_open: boolean;
+  authenticated: boolean;
+  user: User | null;
+};
+export type UserMonitor = {
+  data: (User & { active_sessions: number })[];
+  total: number;
+  page: number;
+  limit: number;
+  stats: { users: number; admins: number; signed_in_users: number };
+};
 export const passwordChangeInput = z
   .object({ current_password: passwordSchema, new_password: passwordSchema })
   .strict();
