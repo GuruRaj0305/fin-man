@@ -15,13 +15,13 @@ import {
 } from '../components/ui';
 import { CashFlowChart, ExpenseChart } from '../components/charts';
 export function Reports() {
-  const { month, view } = useWorkspace(),
+  const { month, view, user } = useWorkspace(),
     [period, setPeriod] = useState('monthly'),
     [year, setYear] = useState(month.slice(0, 4)),
     [error, setError] = useState('');
   const query = new URLSearchParams({ year, ...(period === 'monthly' ? { month } : {}) }),
     report = useQuery({
-      queryKey: ['reports', query.toString()],
+      queryKey: ['reports', user.id, query.toString()],
       queryFn: () =>
         api<{ income: number; expense: number; categories: (Category & { amount: number })[] }>(
           `/reports?${query}`,

@@ -11,8 +11,6 @@ import {
   goalInput,
   contributionInput,
   budgetInput,
-  authInput,
-  passwordChangeInput,
   paymentInput,
   importSchema,
   transactionQuery,
@@ -30,16 +28,11 @@ import {
   type Payment,
 } from '@folio/shared';
 import type { Env } from './types';
-import {
-  hashPassword,
-  verifyPassword,
-  sign,
-  createSession,
-  readSession,
-  clearSession,
-} from './auth';
+import { readSession } from './auth';
+import authRoutes from './auth-routes';
 import {
   loadData,
+  storageId,
   insert,
   bulkInsert,
   tables,
@@ -58,7 +51,12 @@ import {
 const app = new Hono<Env>();
 type Ctx = Context<Env>;
 const prefix = '/api/v1';
-const open = new Set([`${prefix}/auth/status`, `${prefix}/auth/setup`, `${prefix}/auth/login`]);
+const open = new Set([
+  `${prefix}/auth/status`,
+  `${prefix}/auth/setup`,
+  `${prefix}/auth/login`,
+  `${prefix}/auth/register`,
+]);
 const fail = (
   c: Ctx,
   code: string,
@@ -96,7 +94,8 @@ app.use('*', async (c, next) => {
   if (!open.has(c.req.path)) {
     const session = await readSession(c);
     if (!session) return fail(c, 'UNAUTHORIZED', 'Please sign in', 401);
-    c.set('session', session);
+    c.set('session', session.key);
+    c.set('user', session.user);
   }
   await next();
 });
@@ -114,6 +113,8 @@ app.onError((err, c) => {
   if (err instanceof DomainError)
     return fail(c, err.status === 404 ? 'NOT_FOUND' : 'VALIDATION', err.message, err.status);
   // Never echo DB errors, request bodies, secrets, or financial records.
+  if (/UNIQUE constraint failed: users\.email/i.test(err.message))
+    return fail(c, 'EMAIL_IN_USE', 'An account with this email already exists.', 409);
   if (/constraint|UNIQUE|FOREIGN KEY|loan payment/i.test(err.message))
     return fail(
       c,
@@ -125,103 +126,7 @@ app.onError((err, c) => {
 });
 app.notFound((c) => fail(c, 'NOT_FOUND', 'API route not found', 404));
 
-app.get(`${prefix}/auth/status`, async (c) => {
-  const user = await c.env.DB.prepare('SELECT id FROM users WHERE id=1').first();
-  return c.json({ needs_setup: !user, authenticated: user ? !!(await readSession(c)) : false });
-});
-async function attemptKey(c: Ctx) {
-  return sign(`login:${c.req.header('CF-Connecting-IP') ?? 'local'}`, c.env.SESSION_SECRET);
-}
-async function checkLock(c: Ctx) {
-  const key = await attemptKey(c),
-    t = Date.now();
-  const row = await c.env.DB.prepare('SELECT locked_until FROM login_attempts WHERE key=?')
-    .bind(key)
-    .first<{ locked_until: number }>();
-  if (row && row.locked_until > t) {
-    c.header('Retry-After', String(Math.ceil((row.locked_until - t) / 1000)));
-    return false;
-  }
-  return true;
-}
-async function failedAttempt(c: Ctx) {
-  const key = await attemptKey(c),
-    t = Date.now();
-  await c.env.DB.prepare(
-    `INSERT INTO login_attempts(key,failures,window_start,locked_until) VALUES(?,1,?,0)
-    ON CONFLICT(key) DO UPDATE SET failures=CASE WHEN window_start<? THEN 1 ELSE failures+1 END,
-    window_start=CASE WHEN window_start<? THEN ? ELSE window_start END,
-    locked_until=CASE WHEN window_start>=? AND failures+1>=5 THEN ? ELSE 0 END`,
-  )
-    .bind(key, t, t - 900000, t - 900000, t, t - 900000, t + 900000)
-    .run();
-}
-app.post(`${prefix}/auth/setup`, async (c) => {
-  if (!(await checkLock(c)))
-    return fail(c, 'LOCKED', 'Too many attempts. Try again in 15 minutes.', 429);
-  const body = authInput.parse(await c.req.json());
-  if (await c.env.DB.prepare('SELECT id FROM users WHERE id=1').first())
-    return fail(c, 'SETUP_COMPLETE', 'A password is already configured', 409);
-  await c.env.DB.prepare('INSERT INTO users(id,password_hash,created_at) VALUES(1,?,?)')
-    .bind(await hashPassword(body.password), now())
-    .run();
-  await createSession(c);
-  return c.json({ ok: true }, 201);
-});
-app.post(`${prefix}/auth/login`, async (c) => {
-  if (!(await checkLock(c)))
-    return fail(c, 'LOCKED', 'Too many attempts. Try again in 15 minutes.', 429);
-  const body = authInput.parse(await c.req.json());
-  const user = await c.env.DB.prepare('SELECT password_hash FROM users WHERE id=1').first<{
-    password_hash: string;
-  }>();
-  if (!user || !(await verifyPassword(body.password, user.password_hash))) {
-    await failedAttempt(c);
-    return fail(c, 'INVALID_CREDENTIALS', 'Password is incorrect', 401);
-  }
-  await c.env.DB.prepare('DELETE FROM login_attempts WHERE key=?')
-    .bind(await attemptKey(c))
-    .run();
-  await createSession(c);
-  return c.json({ ok: true });
-});
-app.post(`${prefix}/auth/logout`, async (c) => {
-  z.object({})
-    .strict()
-    .parse(await c.req.json());
-  await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(c.get('session')).run();
-  clearSession(c);
-  return c.json({ ok: true });
-});
-app.post(`${prefix}/auth/logout-all`, async (c) => {
-  z.object({})
-    .strict()
-    .parse(await c.req.json());
-  await c.env.DB.prepare('DELETE FROM sessions').run();
-  clearSession(c);
-  return c.json({ ok: true });
-});
-app.post(`${prefix}/auth/password`, async (c) => {
-  if (!(await checkLock(c)))
-    return fail(c, 'LOCKED', 'Too many attempts. Try again in 15 minutes.', 429);
-  const b = passwordChangeInput.parse(await c.req.json());
-  const user = await c.env.DB.prepare('SELECT password_hash FROM users WHERE id=1').first<{
-    password_hash: string;
-  }>();
-  if (!user || !(await verifyPassword(b.current_password, user.password_hash))) {
-    await failedAttempt(c);
-    return fail(c, 'INVALID_CREDENTIALS', 'Current password is incorrect', 401);
-  }
-  await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE users SET password_hash=? WHERE id=1').bind(
-      await hashPassword(b.new_password),
-    ),
-    c.env.DB.prepare('DELETE FROM sessions'),
-    c.env.DB.prepare('DELETE FROM login_attempts'),
-  ]);
-  await createSession(c);
-  return c.json({ ok: true });
-});
+app.route(prefix, authRoutes);
 
 function page<T>(rows: T[], query: { page: number; limit: number }) {
   return {
@@ -230,16 +135,16 @@ function page<T>(rows: T[], query: { page: number; limit: number }) {
     ...query,
   };
 }
-app.get(`${prefix}/snapshot`, async (c) => c.json(await loadData(c.env.DB)));
+app.get(`${prefix}/snapshot`, async (c) => c.json(await loadData(c.env.DB, c.get('user').id)));
 app.get(`${prefix}/overview`, async (c) => {
   const q = z.object({ month: monthSchema, today: dateSchema }).parse(c.req.query());
-  return c.json(overview(await loadData(c.env.DB), q.month, q.today));
+  return c.json(overview(await loadData(c.env.DB, c.get('user').id), q.month, q.today));
 });
 app.get(`${prefix}/reports`, async (c) => {
   const q = z
     .object({ year: z.coerce.number().int().min(1900).max(9999), month: monthSchema.optional() })
     .parse(c.req.query());
-  const data = await loadData(c.env.DB),
+  const data = await loadData(c.env.DB, c.get('user').id),
     ids = new Set(data.accounts.filter((a) => a.currency === 'INR').map((a) => a.id));
   const tx = data.transactions.filter(
     (t) =>
@@ -268,7 +173,7 @@ const resources: [string, Table, ZodTypeAny][] = [
 ];
 for (const [path, table, schema] of resources) {
   app.get(`${prefix}/${path}`, async (c) => {
-    const data = await loadData(c.env.DB),
+    const data = await loadData(c.env.DB, c.get('user').id),
       q =
         table === 'transactions'
           ? transactionQuery.parse(c.req.query())
@@ -299,7 +204,7 @@ for (const [path, table, schema] of resources) {
   app.post(`${prefix}/${path}`, async (c) => {
     const body = schema.parse(await c.req.json()) as Row,
       row = record(body),
-      data = await loadData(c.env.DB);
+      data = await loadData(c.env.DB, c.get('user').id);
     if (table === 'accounts') validateAccount(row as Account, data);
     if (table === 'transactions') validateTransaction(row as Transaction, data);
     if (table === 'goals' && body.account_id)
@@ -309,13 +214,13 @@ for (const [path, table, schema] of resources) {
       );
     const candidate = { ...data, [table]: [...data[table], row] } as Dataset;
     validateDataset(candidate);
-    await insert(c.env.DB, table, row).run();
+    await insert(c.env.DB, c.get('user').id, table, row).run();
     return c.json(row, 201);
   });
   app.put(`${prefix}/${path}/:id`, async (c) => {
     const id = parseId(c),
       body = schema.parse(await c.req.json()) as Row,
-      data = await loadData(c.env.DB),
+      data = await loadData(c.env.DB, c.get('user').id),
       old = data[table].find((r) => r.id === id);
     if (!old) return fail(c, 'NOT_FOUND', 'Record not found', 404);
     if (table === 'transactions' && data.loan_payments.some((p) => p.transaction_id === id))
@@ -328,7 +233,7 @@ for (const [path, table, schema] of resources) {
       [table]: data[table].map((r) => (r.id === id ? row : r)),
     } as Dataset;
     validateDataset(candidate);
-    await insert(c.env.DB, table, row, true).run();
+    await insert(c.env.DB, c.get('user').id, table, row, true).run();
     return c.json(row);
   });
   app.delete(`${prefix}/${path}/:id`, async (c) => {
@@ -336,7 +241,7 @@ for (const [path, table, schema] of resources) {
       .strict()
       .parse(await c.req.json());
     const id = parseId(c),
-      data = await loadData(c.env.DB);
+      data = await loadData(c.env.DB, c.get('user').id);
     if (!data[table].some((r) => r.id === id)) return fail(c, 'NOT_FOUND', 'Record not found', 404);
     if (table === 'transactions') {
       const payment = data.loan_payments.find((p) => p.transaction_id === id);
@@ -349,14 +254,16 @@ for (const [path, table, schema] of resources) {
       }
     }
     // Cascades intentionally remove detail records with a holding or goal.
-    await c.env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(id).run();
+    await c.env.DB.prepare(`DELETE FROM ${table} WHERE id=? AND user_id=?`)
+      .bind(storageId(c.get('user').id, id), c.get('user').id)
+      .run();
     return c.json({ ok: true });
   });
 }
 
 app.get(`${prefix}/loans`, async (c) => {
   const q = listQuery.parse(c.req.query()),
-    data = await loadData(c.env.DB);
+    data = await loadData(c.env.DB, c.get('user').id);
   return c.json(
     page(
       data.accounts.filter((a) => a.type === 'loan').map((a) => loanDetails(data, a.id)),
@@ -366,21 +273,21 @@ app.get(`${prefix}/loans`, async (c) => {
 });
 app.post(`${prefix}/loans`, async (c) => {
   const row = record(accountInput.parse({ ...((await c.req.json()) as Row), type: 'loan' })),
-    data = await loadData(c.env.DB);
+    data = await loadData(c.env.DB, c.get('user').id);
   validateAccount(row as Account, data);
-  await insert(c.env.DB, 'accounts', row).run();
+  await insert(c.env.DB, c.get('user').id, 'accounts', row).run();
   return c.json(row, 201);
 });
 app.get(`${prefix}/loans/:id`, async (c) =>
-  c.json(loanDetails(await loadData(c.env.DB), parseId(c))),
+  c.json(loanDetails(await loadData(c.env.DB, c.get('user').id), parseId(c))),
 );
 app.get(`${prefix}/loans/:id/schedule`, async (c) =>
-  c.json(loanDetails(await loadData(c.env.DB), parseId(c)).schedule),
+  c.json(loanDetails(await loadData(c.env.DB, c.get('user').id), parseId(c)).schedule),
 );
 app.post(`${prefix}/loans/:id/payments`, async (c) => {
   const id = parseId(c),
     b = paymentInput.parse(await c.req.json()),
-    data = await loadData(c.env.DB),
+    data = await loadData(c.env.DB, c.get('user').id),
     detail = loanDetails(data, id);
   const source = data.accounts.find((a) => a.id === b.account_id);
   assert(
@@ -428,8 +335,8 @@ app.post(`${prefix}/loans/:id/payments`, async (c) => {
     interest,
   }) as Payment;
   await c.env.DB.batch([
-    insert(c.env.DB, 'transactions', tx),
-    insert(c.env.DB, 'loan_payments', payment),
+    insert(c.env.DB, c.get('user').id, 'transactions', tx),
+    insert(c.env.DB, c.get('user').id, 'loan_payments', payment),
   ]);
   return c.json(payment, 201);
 });
@@ -437,16 +344,18 @@ app.delete(`${prefix}/loans/:id/payments/:paymentId`, async (c) => {
   z.object({})
     .strict()
     .parse(await c.req.json());
-  const data = await loadData(c.env.DB),
+  const data = await loadData(c.env.DB, c.get('user').id),
     details = loanDetails(data, parseId(c));
   const p = details.payments.find((p) => p.id === idSchema.parse(c.req.param('paymentId')));
   assert(p, 'Payment not found');
   assert(details.payments.at(-1)?.id === p.id, 'Remove newer payments first');
-  await c.env.DB.prepare('DELETE FROM transactions WHERE id=?').bind(p.transaction_id).run();
+  await c.env.DB.prepare('DELETE FROM transactions WHERE id=? AND user_id=?')
+    .bind(storageId(c.get('user').id, p.transaction_id), c.get('user').id)
+    .run();
   return c.json({ ok: true });
 });
 app.get(`${prefix}/investments/:id`, async (c) =>
-  c.json(holdingDetails(await loadData(c.env.DB), parseId(c))),
+  c.json(holdingDetails(await loadData(c.env.DB, c.get('user').id), parseId(c))),
 );
 for (const [path, table, schema, parentTable, parentKey] of [
   ['investments', 'investment_entries', entryInput, 'holdings', 'holding_id'],
@@ -457,7 +366,9 @@ for (const [path, table, schema, parentTable, parentKey] of [
   app.get(`${prefix}/${path}/:id/${suffix}`, async (c) => {
     const id = parseId(c),
       q = listQuery.parse(c.req.query()),
-      data = await loadData(c.env.DB);
+      data = await loadData(c.env.DB, c.get('user').id);
+    if (!data[parentTable].some((row) => row.id === id))
+      return fail(c, 'NOT_FOUND', 'Parent record not found', 404);
     return c.json(
       page(
         data[table].filter((r) => r[parentKey as keyof typeof r] === id),
@@ -468,14 +379,14 @@ for (const [path, table, schema, parentTable, parentKey] of [
   app.post(`${prefix}/${path}/:id/${suffix}`, async (c) => {
     const id = parseId(c),
       body = schema.parse(await c.req.json()),
-      data = await loadData(c.env.DB);
+      data = await loadData(c.env.DB, c.get('user').id);
     assert(
       data[parentTable].some((r) => r.id === id),
       'Parent record not found',
     );
     const row = record({ ...body, [parentKey]: id });
     validateDataset({ ...data, [table]: [...data[table], row] } as Dataset);
-    await insert(c.env.DB, table, row).run();
+    await insert(c.env.DB, c.get('user').id, table, row).run();
     return c.json(row, 201);
   });
   app.delete(`${prefix}/${path}/:id/${suffix}/:childId`, async (c) => {
@@ -484,8 +395,10 @@ for (const [path, table, schema, parentTable, parentKey] of [
       .parse(await c.req.json());
     const id = parseId(c),
       child = idSchema.parse(c.req.param('childId'));
-    const result = await c.env.DB.prepare(`DELETE FROM ${table} WHERE id=? AND ${parentKey}=?`)
-      .bind(child, id)
+    const result = await c.env.DB.prepare(
+      `DELETE FROM ${table} WHERE id=? AND ${parentKey}=? AND user_id=?`,
+    )
+      .bind(storageId(c.get('user').id, child), storageId(c.get('user').id, id), c.get('user').id)
       .run();
     if (!result.meta.changes) return fail(c, 'NOT_FOUND', 'Record not found', 404);
     return c.json({ ok: true });
@@ -494,10 +407,14 @@ for (const [path, table, schema, parentTable, parentKey] of [
 
 app.get(`${prefix}/export`, async (c) => {
   c.header('Content-Disposition', `attachment; filename="folio-backup-${now().slice(0, 10)}.json"`);
-  return c.json({ version: 1, exported_at: now(), data: await loadData(c.env.DB) });
+  return c.json({
+    version: 1,
+    exported_at: now(),
+    data: await loadData(c.env.DB, c.get('user').id),
+  });
 });
 app.get(`${prefix}/export/transactions.csv`, async (c) => {
-  const data = await loadData(c.env.DB),
+  const data = await loadData(c.env.DB, c.get('user').id),
     f = transactionQuery.parse(c.req.query());
   const rows = data.transactions.filter(
     (t) =>
@@ -548,7 +465,7 @@ app.post(`${prefix}/import`, async (c) => {
   const b = importSchema.parse(await c.req.json());
   let data = b.backup.data;
   if (b.mode === 'merge') {
-    const existing = await loadData(c.env.DB);
+    const existing = await loadData(c.env.DB, c.get('user').id);
     data = Object.fromEntries(
       tables.map((t) => [
         t,
@@ -560,11 +477,13 @@ app.post(`${prefix}/import`, async (c) => {
   // D1 batch is atomic: either all deletes/upserts commit or the existing data remains.
   const statements: D1PreparedStatement[] = [];
   if (b.mode === 'replace')
-    for (const t of [...tables].reverse()) statements.push(c.env.DB.prepare(`DELETE FROM ${t}`));
+    for (const t of [...tables].reverse())
+      statements.push(c.env.DB.prepare(`DELETE FROM ${t} WHERE user_id=?`).bind(c.get('user').id));
   for (const t of tables)
     statements.push(
       ...bulkInsert(
         c.env.DB,
+        c.get('user').id,
         t,
         [...data[t]].sort((a, b) =>
           t === 'loan_payments'
@@ -586,11 +505,11 @@ app.post(`${prefix}/import/csv`, async (c) => {
     })
     .strict()
     .parse(await c.req.json());
-  const data = await loadData(c.env.DB),
+  const data = await loadData(c.env.DB, c.get('user').id),
     rows = b.transactions.map((t) => record(t));
   rows.forEach((t) => validateTransaction(t as Transaction, data));
   validateDataset({ ...data, transactions: [...data.transactions, ...(rows as Transaction[])] });
-  await c.env.DB.batch(bulkInsert(c.env.DB, 'transactions', rows));
+  await c.env.DB.batch(bulkInsert(c.env.DB, c.get('user').id, 'transactions', rows));
   return c.json({ ok: true, records: rows.length }, 201);
 });
 

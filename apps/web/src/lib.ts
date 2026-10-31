@@ -44,8 +44,8 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
   return response.json();
 }
 export const today = () => localDate();
-export function useSnapshot() {
-  return useQuery({ queryKey: ['snapshot'], queryFn: () => api<Dataset>('/snapshot') });
+export function useSnapshot(userId: number) {
+  return useQuery({ queryKey: ['snapshot', userId], queryFn: () => api<Dataset>('/snapshot') });
 }
 export function useSave() {
   const qc = useQueryClient();
@@ -124,9 +124,9 @@ export type Overview = {
   budgets: (Budget & { spent: number; remaining: number; percent: number; over: boolean })[];
   recent: Transaction[];
 };
-export function useOverview(month: string) {
+export function useOverview(month: string, userId: number) {
   return useQuery({
-    queryKey: ['overview', month, today()],
+    queryKey: ['overview', userId, month, today()],
     queryFn: () => api<Overview>(`/overview?month=${month}&today=${today()}`),
   });
 }

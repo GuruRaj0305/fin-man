@@ -14,7 +14,7 @@ import { api, download, useSave, today } from '../lib';
 import { CategoryDialog } from '../components/forms';
 import { PageHeading, SectionTitle, Field, Dialog, str } from '../components/ui';
 export function SettingsPage() {
-  const { data, theme, setTheme } = useWorkspace(),
+  const { data, theme, setTheme, user } = useWorkspace(),
     save = useSave(),
     [category, setCategory] = useState<Category | true | null>(null),
     [password, setPassword] = useState(false),
@@ -76,7 +76,8 @@ export function SettingsPage() {
         <section className="panel">
           <SectionTitle title="Your private space" action={<ShieldCheck size={20} />} />
           <p className="muted">
-            A single password protects your workspace. Changing it signs out every other session.
+            Signed in as {user.name} ({user.email}). Changing your password signs out your other
+            sessions.
           </p>
           <div className="settings-buttons">
             <button className="btn secondary" onClick={() => setPassword(true)}>

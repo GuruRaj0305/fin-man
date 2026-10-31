@@ -1,6 +1,6 @@
 # Folio · Personal finance
 
-A private, single-user finance tracker for desktop Linux and Android Chrome. React 18, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS, Recharts, and a PWA shell; Hono on Cloudflare Workers with plain SQL and D1. No signup, analytics, advertising, live prices, paid dependencies, or third-party runtime scripts.
+A personal finance tracker with private user workspaces and an administrator user monitor, for desktop Linux and Android Chrome. React 18, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS, Recharts, and a PWA shell; Hono on Cloudflare Workers with plain SQL and D1. Email/password registration is supported. There are no analytics, advertising, live prices, paid dependencies, or third-party runtime scripts.
 
 **The app was built and verified locally, then deployed to Cloudflare with explicit owner authorization. Setup and test scripts remain local-only. See the production deployment record below.**
 
@@ -21,7 +21,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-Open **http://localhost:5179**. On the first visit, set your own password (12–128 characters). There is no default password or pre-created user. Use `localhost` consistently: the configured origin is `http://localhost:5179`, and cookies belong to that host. Vite proxies `/api` to the Worker at `127.0.0.1:8787`.
+Open **http://localhost:5179**. On the first visit, create the owner account with your name, email, and password (12–128 characters). The first account is the administrator; subsequent registrations create ordinary users. There is no default password or pre-created user. Use `localhost` consistently: the configured origin is `http://localhost:5179`, and cookies belong to that host. Vite proxies `/api` to the Worker at `127.0.0.1:8787`.
 
 Development and preview bind to `localhost` so the printed browser URL matches `APP_ORIGIN`. Opening `http://127.0.0.1:5179` instead uses a different origin and setup/login writes return 403. Open the `localhost` URL to resolve this. The Worker's local configuration comes from `apps/api/.dev.vars`, not the repository-root `.env`.
 
@@ -47,6 +47,20 @@ npm run dev
 Reset permanently removes the dedicated `apps/api/.wrangler/state` directory, including the local password and sessions, and reapplies migrations. It cannot target a remote database. An E2E reset uses a separate `.local/e2e-d1` directory and never resets your development data.
 
 If you change the web port, update `APP_ORIGIN` in `.dev.vars` and `wrangler.toml`, and the Vite port in `apps/web/vite.config.ts`. `API_PROXY_PORT` can override the local proxy target port. Do not run a second server on occupied ports.
+
+## Accounts and the admin monitor
+
+Choose **Create an account** on the sign-in screen to register with your name, email, and a password of 12–128 characters. Emails are trimmed and normalized to lowercase. Every new account receives standard categories and an empty private workspace. The server scopes financial reads, writes, reports, exports, imports, and session revocation to the signed-in user. Browser query caches are also keyed by user and cleared on sign-out and sign-in.
+
+The administrator sees **Admin monitor** in the sidebar (or the mobile **More** menu). It lists registered users with name, login email, role, joined date, last sign-in, and unexpired session counts. Search, pagination, refresh, and 30-second updates are available. A session count is not a live online indicator. This first version provides a read-only user list; administrator access does not grant access to another user's financial records. Role changes, account deletion, and user suspension are not exposed.
+
+### Existing owner after the multi-user upgrade
+
+Migration `0003_multi_user.sql` keeps the original owner as user 1 and grants that account the administrator role. Its password hash, active sessions, finance records, and public record IDs are preserved. An existing session opens **Finish your account**; otherwise choose **Existing owner? Sign in with your password**, then choose your name and login email. After completion, use email and password for future sign-ins. Registration opens only once the owner has chosen an email, so a new signup cannot reserve it first. There is no default admin password or hard-coded owner email.
+
+The migration copies the legacy authentication rows into replacement tables before dropping the old tables. All existing finance rows receive owner ID 1. New workspaces use internal ID namespaces and database ownership/reference guards, allowing the same portable backup IDs to exist in multiple accounts without overwriting other users. The JSON backup format remains version 1 and contains only the exporting user's finance data.
+
+Before the production merge, keep a private D1 backup using the documented export command below. Applying the migration and deploying the new API are sequential operations; the previous API can briefly reject finance reads after ownership columns are added and before the new API is live. After additional users exist, use a forward fix rather than rolling back to single-user code, which does not enforce workspace ownership. Feature branches run CI through pull requests; merging into `main` runs the production migration and deployment.
 
 ## What you can do
 
@@ -78,15 +92,15 @@ The UI includes loading/error/empty states, labeled controls, keyboard-operable 
 
 ## Security and offline behavior
 
-- Single-row user table makes first-run setup one-time, including under concurrent requests. Passwords use salted WebCrypto PBKDF2-SHA-256: six sequential, domain-separated 100,000-iteration rounds. This keeps each call within Workers' per-call PBKDF2 limit while requiring 600,000 rounds of sequential PBKDF2 work. Hashes store their algorithm/cost and per-password 24-byte random salt.
+- First-run setup reserves user ID 1 for the owner, including under concurrent requests. Public registration always creates an ordinary user and cannot choose a role. Passwords use salted WebCrypto PBKDF2-SHA-256: six sequential, domain-separated 100,000-iteration rounds. This keeps each call within Workers' per-call PBKDF2 limit while requiring 600,000 rounds of sequential PBKDF2 work. Hashes store their algorithm/cost and per-password 24-byte random salt.
 - Opaque random session tokens are HMAC signed; only SHA-256 token hashes are stored in D1. Production uses a `__Host-` HttpOnly, Secure, SameSite=Strict cookie with no Domain attribute. Local HTTP development deliberately omits Secure. Sessions slide for seven days, refresh at most hourly, and have a hard 30-day maximum. Logout, logout everywhere, expiry, and password changes revoke sessions server-side.
-- Five invalid passwords in a 15-minute window lock the client IP's keyed hash for 15 minutes. Password-change failures use the same limiter. D1 stores attempts, never raw IPs or passwords.
-- All routes except status/setup/login require a session, including export/import and mutations under `/auth`. Writes require JSON plus `X-Finance-Client: web`; supplied Origins must exactly match `APP_ORIGIN`. Cross-origin access is not enabled.
+- Five invalid sign-ins in a 15-minute window lock that email/IP pair for 15 minutes. A separate IP budget limits attempts across email addresses; registration is limited to five attempts per IP per 15 minutes. Password-change failures are limited per user/IP pair. D1 stores attempts, never raw IPs or passwords.
+- All routes except status/setup/login/registration require a session, including export/import and mutations under `/auth`. Writes require JSON plus `X-Finance-Client: web`; supplied Origins must exactly match `APP_ORIGIN`. Cross-origin access is not enabled.
 - API responses and exports use `Cache-Control: no-store`. Static Pages headers provide CSP, nosniff, frame denial, referrer policy, and disabled camera/microphone/geolocation. The Worker provides defensive API headers and production HSTS. There is no request/body/financial-data logger in app code. The local wrapper disables Wrangler telemetry and discards its inspector debug log through a `/dev/null` symlink, because Wrangler can otherwise record D1 responses.
 - The service worker precaches only the app shell/assets. It neither caches API responses nor queues financial writes. Already-loaded data remains readable while offline, with a banner and blocked writes. Reloading offline shows the shell and a connect-to-sign-in message; financial records are not persisted in browser storage. Theme preference is the only localStorage entry.
 - Production HTTPS is required for Android installation and Secure cookies. After the first online visit, use Chrome's **Install app** action. The manifest includes standalone display, theme/background colors, and 192/512/maskable PNG icons. Updates prompt before reloading.
 
-There is intentionally no email reset, external identity provider, recovery backdoor, shared access, or multi-tenancy. Keep your password and backups safe. If the password is lost, the database owner must back up the database and perform an explicit administrative credential reset; importing a finance backup into a fresh workspace does not restore the old password.
+Email addresses are login identifiers; this version sends neither verification emails nor password-reset emails. There is no external identity provider, shared financial workspace, or recovery backdoor. Keep your password and backups safe. If the password is lost, the database owner must back up the database and perform an explicit administrative credential reset; importing a finance backup into a fresh workspace does not restore the old password.
 
 ## Backups and imports
 
@@ -96,7 +110,7 @@ For a restore drill, import into a separate local workspace first and check tota
 
 JSON exports have `{version:1, exported_at, data}`. Import validates all Zod schemas, IDs, references, category types, currency relationships, and loan allocations before committing an **atomic D1 batch**. Replace deletes financial tables first, preserving authentication; merge overwrites matching IDs and retains other records. Duplicate names/unique budgets can conflict even when IDs differ; review the error and reconcile records rather than silently dropping them. Imports cannot partially commit. Newly merged loan payments must be chronological relative to existing payments.
 
-Files are limited to 20 MB, with explicit per-table schema bounds (50,000 transactions, 20,000 valuations, 10,000 entries/payments/contributions/budgets, and 2,000 accounts/categories/holdings/goals). Bulk JSON inserts use chunks below D1's 2 MB bound-value limit. These limits suit a single-user dataset; larger archives require a deliberate database migration/import process.
+Files are limited to 20 MB, with explicit per-table schema bounds (50,000 transactions, 20,000 valuations, 10,000 entries/payments/contributions/budgets, and 2,000 accounts/categories/holdings/goals). Bulk JSON inserts use chunks below D1's 2 MB bound-value limit. These limits apply to each user workspace; larger archives require a deliberate database migration/import process.
 
 CSV import allows up to 500 rows per operation. Map the columns and preview before typing `IMPORT`. Account/category names (case insensitive) or IDs must already exist. Duplicate CSV imports add duplicate rows; they do not merge. Blank `to_account`, `note`, or `tags` mappings are optional. Tags are `|` separated in CSV and comma separated in the entry form. All rows save together or none do.
 
@@ -160,7 +174,7 @@ All paths below are under `/api/v1`. JSON errors are `{error:{code,message,detai
 
 | Resource     | Routes                                                                                                                                                              |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Auth         | `GET /auth/status`; `POST /auth/setup`, `/auth/login`, `/auth/logout`, `/auth/logout-all`, `/auth/password`                                                         |
+| Auth         | `GET /auth/status`; `POST /auth/setup`, `/auth/register`, `/auth/login`, `/auth/profile` (legacy owner), `/auth/logout`, `/auth/logout-all`, `/auth/password`       |
 | Accounts     | `GET/POST /accounts`; `PUT/DELETE /accounts/:id`                                                                                                                    |
 | Categories   | `GET/POST /categories`; `PUT/DELETE /categories/:id`                                                                                                                |
 | Transactions | `GET/POST /transactions`; `PUT/DELETE /transactions/:id`; filters `from,to,account_id,category_id,type,search`                                                      |
@@ -170,7 +184,8 @@ All paths below are under `/api/v1`. JSON errors are `{error:{code,message,detai
 | Budgets      | `GET/POST /budgets`; `PUT/DELETE /budgets/:id`                                                                                                                      |
 | Reports      | `GET /overview?month=YYYY-MM&today=YYYY-MM-DD`; `GET /reports?year=YYYY&month=YYYY-MM` (month optional)                                                             |
 | Portability  | `GET /export`, `/export/transactions.csv`; `POST /import`, `/import/csv`                                                                                            |
-| Workspace    | `GET /snapshot` returns the credential-free finance dataset used by the single-user UI                                                                              |
+| Admin        | `GET /admin/users?search=&page=1&limit=20` (administrator only; account metadata and active-session counts)                                                         |
+| Workspace    | `GET /snapshot` returns the credential-free finance dataset used by the signed-in user                                                                              |
 
 The snapshot and report implementation loads the bounded personal dataset in a D1 batch for consistent calculations. List responses are paginated, but filtering occurs in the Worker. This favors auditable shared arithmetic over high-volume/server-side analytics. Very large datasets may reach Workers free-tier CPU/memory/read quotas before schema limits. There is no paid plan requirement or automatic paid resource creation.
 

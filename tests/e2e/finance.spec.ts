@@ -2,9 +2,11 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFile, mkdir } from 'node:fs/promises';
 import { localDate } from '../../packages/shared/src/calculations';
 const password = 'my local test password';
+const ownerEmail = 'owner@example.test';
 test.describe.configure({ mode: 'serial' });
 async function login(page: Page) {
   await page.goto('/');
+  await page.getByLabel('Email address', { exact: true }).fill(ownerEmail);
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(
@@ -18,6 +20,8 @@ async function finish(page: Page, name = 'Save changes') {
 test('first run sets a password, signs out, and logs in', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Make yourself at home.' })).toBeVisible();
+  await page.getByLabel('Your name', { exact: true }).fill('Test Owner');
+  await page.getByLabel('Email address', { exact: true }).fill(ownerEmail);
   await page.getByLabel('Create a password').fill(password);
   await page.getByLabel('Confirm password').fill(password);
   await page.getByRole('button', { name: 'Create my workspace' }).click();
@@ -26,6 +30,7 @@ test('first run sets a password, signs out, and logs in', async ({ page }) => {
   ).toBeVisible();
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'A little peace of mind.' })).toBeVisible();
+  await page.getByLabel('Email address', { exact: true }).fill(ownerEmail);
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(
@@ -210,4 +215,69 @@ test('budget warnings, reports and responsive visual review', async ({ page }) =
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
+});
+
+test('self-registration isolates workspaces and the admin monitor lists current users', async ({
+  page,
+  browser,
+}) => {
+  await login(page);
+  await page.getByRole('link', { name: 'Admin monitor', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Current users', exact: true })).toBeVisible();
+  await expect(page.getByRole('row').filter({ hasText: ownerEmail })).toContainText(
+    'Administrator',
+  );
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.getByRole('button', { name: 'Create an account', exact: true }).click();
+  await page.getByLabel('Your name', { exact: true }).fill('Second User');
+  await page.getByLabel('Email address', { exact: true }).fill('second@example.test');
+  await page.getByLabel('Create a password', { exact: true }).fill('second private test password');
+  await page.getByLabel('Confirm password', { exact: true }).fill('second private test password');
+  await page.getByRole('button', { name: 'Create my workspace', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'A little clarity. A lot of possibility.' }),
+  ).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Admin monitor', exact: true })).toHaveCount(0);
+  await page.goto('/accounts');
+  await expect(page.getByText('Everyday testing', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
+  await page.getByLabel('Account name').fill('Member private bank');
+  await finish(page);
+  await expect(page.getByText('Member private bank', { exact: true })).toBeVisible();
+  await page.goto('/admin/users');
+  await expect(page.getByRole('alert')).toContainText('Administrator access is required.');
+  const adminContext = await browser.newContext({ baseURL: 'http://localhost:5174' });
+  try {
+    const admin = await adminContext.newPage();
+    await login(admin);
+    await admin.goto('/accounts');
+    await expect(admin.getByText('Everyday testing', { exact: true })).toBeVisible();
+    await expect(admin.getByText('Member private bank', { exact: true })).toHaveCount(0);
+    await admin.getByRole('link', { name: 'Admin monitor', exact: true }).click();
+    const row = admin.getByRole('row').filter({ hasText: 'second@example.test' });
+    await expect(row).toContainText('Second User');
+    await expect(row.getByRole('cell').nth(1)).toHaveText('User');
+    await expect(row.getByRole('cell').last()).toHaveText('1');
+    await admin.getByLabel('Search users').fill('second@example.test');
+    await expect(admin.getByRole('row').filter({ hasText: ownerEmail })).toHaveCount(0);
+    await admin.getByLabel('Search users').fill('');
+    await expect(admin.getByRole('row').filter({ hasText: ownerEmail })).toBeVisible();
+    await mkdir('.local/qa', { recursive: true });
+    await admin.screenshot({
+      path: '.local/qa/admin-users-desktop.png',
+      fullPage: true,
+      animations: 'disabled',
+    });
+    await admin.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await admin.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    await admin.screenshot({
+      path: '.local/qa/admin-users-mobile.png',
+      fullPage: true,
+      animations: 'disabled',
+    });
+  } finally {
+    await adminContext.close();
+  }
 });

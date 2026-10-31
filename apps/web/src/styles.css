@@ -2,6 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
+.auth-options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 20px;
+}
+.profile-layout {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  padding: 32px 20px;
+}
+.profile-layout .auth-form {
+  width: min(100%, 440px);
+}
+.user-email {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.users-table {
+  min-width: 720px;
+}
+.workspace-name > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .admin-user-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .admin-user-toolbar .search-input {
+    width: 100%;
+    max-width: none;
+  }
+}
+@media (max-height: 800px) {
+  .sidebar .sidebar-note {
+    display: none;
+  }
+  .sidebar .sidebar-bottom {
+    padding-top: 16px;
+  }
+}
+
 :root {
   font-family:
     Inter,
@@ -459,15 +510,18 @@ small {
   position: relative;
   width: 100%;
 }
-.sidebar nav a.active {
+.sidebar nav a.active,
+.sidebar-bottom > a.active {
   color: var(--green);
   background: #eaf0e0;
   font-weight: 600;
 }
-.dark .sidebar nav a.active {
+.dark .sidebar nav a.active,
+.dark .sidebar-bottom > a.active {
   background: #2e402d;
 }
-.sidebar nav a.active::after {
+.sidebar nav a.active::after,
+.sidebar-bottom > a.active::after {
   content: '';
   position: absolute;
   left: 0;
