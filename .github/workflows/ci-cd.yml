@@ -1,0 +1,133 @@
+name: CI and production deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: 'false'
+  WRANGLER_LOG_SANITIZE: 'true'
+
+jobs:
+  verify:
+    name: Lint, test, and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: verify-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+      - name: Save browser test failures
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-test-failures
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Save verified production build
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: production-web
+          path: apps/web/dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy production
+    needs: verify
+    if: github.repository == 'GuruRaj0305/fin-man' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://fin.gururajhr.in
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - name: Check out verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that this is still the latest main commit
+        id: current
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if [ "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "A newer main commit exists; skipping this deployment." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up Node.js
+        if: steps.current.outputs.deploy == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        if: steps.current.outputs.deploy == 'true'
+        run: npm ci
+
+      - name: Download verified production build
+        if: steps.current.outputs.deploy == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: production-web
+          path: apps/web/dist/
+
+      - name: Apply migrations and deploy API and frontend
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-deploy.log
+        run: |
+          : "${CLOUDFLARE_API_TOKEN:?Add the CLOUDFLARE_API_TOKEN repository secret.}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Add the CLOUDFLARE_ACCOUNT_ID repository variable.}"
+          node scripts/worker.mjs d1 migrations apply DB --remote
+          node scripts/worker.mjs deploy
+          (
+            cd apps/web
+            node ../../node_modules/wrangler/bin/wrangler.js pages deploy dist \
+              --project-name=folio-finance --branch=main --commit-hash="$GITHUB_SHA"
+          )
+
+      - name: Check live production endpoints
+        if: steps.current.outputs.deploy == 'true'
+        run: |
+          npm run smoke:production
+          echo "Deployed commit $GITHUB_SHA to https://fin.gururajhr.in" >> "$GITHUB_STEP_SUMMARY"

@@ -176,6 +176,26 @@ The snapshot and report implementation loads the bounded personal dataset in a D
 
 ## Cloudflare production deployment
 
+### Automatic deployment from GitHub
+
+[GitHub Actions](https://github.com/GuruRaj0305/fin-man/actions/workflows/ci-cd.yml) validates every push to `main` and pull request targeting `main`. It installs locked dependencies with Node 22, runs lint/format checks, all unit/API tests, the production build, and Chromium end-to-end tests against an isolated local database. Pull requests run without production credentials.
+
+After validation, a push to `main` deploys the verified frontend artifact and matching API source to the existing Cloudflare account. The workflow applies pending D1 migrations, deploys `folio-finance-api`, and deploys the `folio-finance` Pages project on its production `main` branch. It checks the live home page, PWA manifest, service worker, authentication status, and unauthenticated accounts response at **https://fin.gururajhr.in**. It neither signs in nor changes financial records during those checks.
+
+One-time repository settings:
+
+1. Add the GitHub Actions **secret** `CLOUDFLARE_API_TOKEN`. Create a custom Cloudflare API token restricted to account `fc65d3b2976d5bfd2111ba4aa7c38d73`, with **Account Settings: Read**, **Cloudflare Pages: Edit**, **Workers Scripts: Edit**, and **D1: Edit**. Store it through the repository's Actions settings or the hidden prompt from `gh secret set CLOUDFLARE_API_TOKEN --repo GuruRaj0305/fin-man`; never commit it.
+2. Add the GitHub Actions **variable** `CLOUDFLARE_ACCOUNT_ID` with value `fc65d3b2976d5bfd2111ba4aa7c38d73`.
+3. Keep the existing Cloudflare Worker `SESSION_SECRET` in Cloudflare's secret store. CI does not need its value, and ordinary Worker deployments preserve it.
+
+Production deployments use the GitHub `production` environment and run one at a time without cancelling an active migration/deployment. An older run skips deployment if a newer `main` commit exists when its deployment starts. The workflow can also be started from **Actions → CI and production deployment → Run workflow**, choosing `main`.
+
+Schema, API, and frontend changes are applied sequentially. Use additive, backward-compatible migrations that work with the running API and older cached clients; a later deployment failure leaves earlier steps applied. Investigate failed runs in Actions, fix the cause, and rerun or push the correction. Browser-failure reports contain only disposable local test data and expire after seven days; production database exports are never uploaded as workflow artifacts.
+
+Run the same anonymous production checks manually with `npm run smoke:production`. See [Cloudflare's CI authentication guide](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) and [Pages Direct Upload CI guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/) for credential setup.
+
+### Deployment architecture and history
+
 This app retains its Pages frontend and separate Hono API Worker. The Pages Function at `functions/api/[[path]].ts` forwards `/api/*` to the `API` service binding, preserving the public URL, Origin, session cookies and security headers. Static assets and the PWA shell remain on Pages. No separate API hostname or Worker route is needed.
 
 Deployment completed on **21 October 2026**:

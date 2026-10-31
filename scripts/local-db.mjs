@@ -1,4 +1,5 @@
 import { workerEnvironment } from './runtime.mjs';
+import { e2ePersistencePath, writeE2eConfig } from './e2e-config.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -7,13 +8,14 @@ const root = fileURLToPath(new URL('../', import.meta.url)),
   api = `${root}apps/api`;
 const mode = process.argv[2],
   e2e = process.argv.includes('--e2e');
-const persistence = e2e ? `${root}.local/e2e-d1` : `${api}/.wrangler/state`;
+const persistence = e2e ? e2ePersistencePath : `${api}/.wrangler/state`;
 function run(args) {
   const r = spawnSync(
     process.execPath,
     [
       `${root}node_modules/wrangler/bin/wrangler.js`,
       ...args,
+      ...(e2e ? ['--config', writeE2eConfig()] : []),
       '--local',
       '--persist-to',
       persistence,

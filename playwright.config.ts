@@ -2,10 +2,11 @@ import { defineConfig, devices } from '@playwright/test';
 import { existsSync } from 'node:fs';
 const executable =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ??
-  (existsSync('/usr/bin/google-chrome') ? '/usr/bin/google-chrome' : undefined);
+  (!process.env.CI && existsSync('/usr/bin/google-chrome') ? '/usr/bin/google-chrome' : undefined);
 export default defineConfig({
   testDir: 'tests/e2e',
   fullyParallel: false,
+  forbidOnly: !!process.env.CI,
   workers: 1,
   timeout: 90000,
   expect: { timeout: 20000 },

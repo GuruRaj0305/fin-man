@@ -1,5 +1,5 @@
 import { workerEnvironment } from './runtime.mjs';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { e2ePersistencePath, writeE2eConfig } from './e2e-config.mjs';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -8,12 +8,7 @@ const reset = spawnSync(process.execPath, [`${root}scripts/local-db.mjs`, 'reset
   stdio: 'inherit',
 });
 if (reset.status !== 0) process.exit(reset.status ?? 1);
-mkdirSync(`${root}.local/e2e-api`, { recursive: true });
-const path = `${root}.local/e2e-api/wrangler.toml`;
-writeFileSync(
-  path,
-  `name="folio-e2e-local-only"\nmain="${root}apps/api/src/index.ts"\ncompatibility_date="2025-10-01"\nworkers_dev=false\n[[d1_databases]]\nbinding="DB"\ndatabase_name="folio-finance"\ndatabase_id="00000000-0000-0000-0000-000000000000"\nmigrations_dir="${root}apps/api/migrations"\n[vars]\nENVIRONMENT="development"\nAPP_ORIGIN="http://localhost:5174"\nSESSION_SECRET="isolated-e2e-local-test-secret-never-for-production"\n`,
-);
+const path = writeE2eConfig();
 const child = spawn(
   process.execPath,
   [
@@ -27,7 +22,7 @@ const child = spawn(
     '--ip',
     '127.0.0.1',
     '--persist-to',
-    `${root}.local/e2e-d1`,
+    e2ePersistencePath,
   ],
   {
     cwd: root,
