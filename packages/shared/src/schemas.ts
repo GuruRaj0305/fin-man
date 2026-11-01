@@ -1,6 +1,22 @@
 import { z } from 'zod';
 
 export const MAX_MONEY = 1_000_000_000_000;
+export const currencies = [
+  'INR',
+  'USD',
+  'EUR',
+  'GBP',
+  'AED',
+  'AUD',
+  'CAD',
+  'CHF',
+  'CNY',
+  'SGD',
+  'NZD',
+  'SAR',
+] as const;
+export const currencySchema = z.enum(currencies);
+export const currencyInput = z.object({ currency: currencySchema }).strict();
 export const minor = z.number().int().safe().min(0).max(MAX_MONEY);
 export const positiveMinor = minor.min(1);
 export const signedMinor = z.number().int().safe().min(-MAX_MONEY).max(MAX_MONEY);
@@ -168,8 +184,30 @@ export const transactionQuery = listQuery.extend({
   type: z.enum(['income', 'expense', 'transfer']).optional(),
   search: z.string().max(200).optional(),
 });
+export const tagSearchQuery = z
+  .object({
+    search: z
+      .string()
+      .trim()
+      .max(40)
+      .refine(
+        (value) =>
+          [...value].every((character) => {
+            const code = character.charCodeAt(0);
+            return code >= 32 && code !== 127;
+          }),
+        'Use printable characters',
+      )
+      .default(''),
+    limit: z.coerce.number().int().min(1).max(20).default(8),
+    exclude: z.array(z.string().trim().max(40)).max(12).default([]),
+  })
+  .strict();
+export type TagSuggestion = { tag: string; similar: boolean };
+export type TagSuggestions = { data: TagSuggestion[] };
 export const datasetSchema = z
   .object({
+    currency: currencySchema.default('INR'),
     accounts: z.array(accountSchema).max(2000),
     categories: z.array(categorySchema).max(2000),
     transactions: z.array(transactionSchema).max(50000),
@@ -196,11 +234,29 @@ export const importSchema = z
 export type Account = z.infer<typeof accountSchema> & { balance?: number };
 export type Category = z.infer<typeof categorySchema>;
 export type Transaction = z.infer<typeof transactionSchema>;
+export type TransactionWithBalances = Transaction & {
+  balance_before: number;
+  balance_after: number;
+  to_balance_before: number | null;
+  to_balance_after: number | null;
+};
 export type Payment = z.infer<typeof paymentSchema>;
 export type Holding = z.infer<typeof holdingSchema>;
 export type Entry = z.infer<typeof entrySchema>;
 export type Valuation = z.infer<typeof valuationSchema>;
 export type Goal = z.infer<typeof goalSchema>;
+export type AccountDetail = {
+  account: Account & { balance: number };
+  stats: {
+    income: number;
+    expense: number;
+    transfer_in: number;
+    transfer_out: number;
+    transaction_count: number;
+  };
+  goals: Goal[];
+  delete_reason: string | null;
+};
 export type Contribution = z.infer<typeof contributionSchema>;
 export type Budget = z.infer<typeof budgetSchema>;
 export type Dataset = z.infer<typeof datasetSchema>;

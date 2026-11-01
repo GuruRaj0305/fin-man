@@ -1,7 +1,7 @@
 import { useDeferredValue, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Download, Pencil, ChevronLeft, ChevronRight } from 'lucide-react';
-import type { Page, Transaction } from '@folio/shared';
+import { Search, Download, Eye, Pencil, ChevronLeft, ChevronRight } from 'lucide-react';
+import type { Page, Transaction, TransactionWithBalances } from '@folio/shared';
 import { useWorkspace } from '../App';
 import { api, download, displayDate } from '../lib';
 import {
@@ -12,9 +12,14 @@ import {
   Loading,
   ErrorState,
   DeleteButton,
+  SectionTitle,
 } from '../components/ui';
 import { TransactionDialog } from '../components/forms';
+import { TransactionDetails } from '../components/TransactionDetails';
 export function Transactions() {
+  return <TransactionList />;
+}
+export function TransactionList({ accountId: scopedAccountId }: { accountId?: string }) {
   const { data, user } = useWorkspace(),
     [search, setSearch] = useState(''),
     deferred = useDeferredValue(search),
@@ -24,35 +29,57 @@ export function Transactions() {
     [category, setCategory] = useState(''),
     [type, setType] = useState(''),
     [page, setPage] = useState(1),
+    [details, setDetails] = useState<TransactionWithBalances | null>(null),
     [edit, setEdit] = useState<Transaction | true | null>(null),
     [exportError, setExportError] = useState('');
+  const selectedAccount = data.accounts.find((account) => account.id === scopedAccountId),
+    effectiveAccountId = scopedAccountId ?? account;
   const query = new URLSearchParams({
     page: String(page),
     limit: '20',
     ...(deferred ? { search: deferred } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
-    ...(account ? { account_id: account } : {}),
+    ...(effectiveAccountId ? { account_id: effectiveAccountId } : {}),
     ...(category ? { category_id: category } : {}),
     ...(type ? { type } : {}),
   });
   const transactions = useQuery({
     queryKey: ['transactions', user.id, query.toString()],
-    queryFn: () => api<Page<Transaction>>(`/transactions?${query}`),
+    queryFn: ({ signal }) =>
+      api<Page<TransactionWithBalances>>(`/transactions?${query}`, 'GET', undefined, signal),
   });
   const update = (setter: (v: string) => void, value: string) => {
     setter(value);
     setPage(1);
   };
+  const currentDetails =
+    details &&
+    (transactions.data?.data.find((transaction) => transaction.id === details.id) ?? details);
   return (
     <>
-      <PageHeading
-        eyebrow="THE DAY-TO-DAY"
-        title="Every little entry matters."
-        description="A clear view of what comes in, goes out, and moves around."
-        action={<AddButton onClick={() => setEdit(true)}>Add transaction</AddButton>}
-      />
+      {!scopedAccountId && (
+        <PageHeading
+          eyebrow="THE DAY-TO-DAY"
+          title="Every little entry matters."
+          description="A clear view of what comes in, goes out, and moves around."
+          action={<AddButton onClick={() => setEdit(true)}>Add transaction</AddButton>}
+        />
+      )}
       <section className="panel">
+        {scopedAccountId && (
+          <SectionTitle
+            title="Transactions"
+            description="All entries involving this account, including transfers."
+            action={
+              selectedAccount?.archived ? (
+                <span className="hint">Restore this account to add transactions.</span>
+              ) : (
+                <AddButton onClick={() => setEdit(true)}>Add transaction</AddButton>
+              )
+            }
+          />
+        )}
         <div className="filter-toolbar">
           <label className="search-input">
             <Search size={17} />
@@ -77,7 +104,7 @@ export function Transactions() {
             Export CSV
           </button>
         </div>
-        <div className="filters">
+        <div className={`filters${scopedAccountId ? ' account-transaction-filters' : ''}`}>
           <label>
             From
             <input
@@ -96,21 +123,23 @@ export function Transactions() {
               onChange={(e) => update(setTo, e.target.value)}
             />
           </label>
-          <label>
-            Account
-            <select
-              aria-label="Filter by account"
-              value={account}
-              onChange={(e) => update(setAccount, e.target.value)}
-            >
-              <option value="">All accounts</option>
-              {data.accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          {!scopedAccountId && (
+            <label>
+              Account
+              <select
+                aria-label="Filter by account"
+                value={account}
+                onChange={(e) => update(setAccount, e.target.value)}
+              >
+                <option value="">All accounts</option>
+                {data.accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label>
             Category
             <select
@@ -160,6 +189,8 @@ export function Transactions() {
                     <th>Category</th>
                     <th>Account</th>
                     <th className="align-right">Amount</th>
+                    <th className="align-right">Balance before</th>
+                    <th className="align-right">Balance after</th>
                     <th>
                       <span className="sr-only">Actions</span>
                     </th>
@@ -168,12 +199,27 @@ export function Transactions() {
                 <tbody>
                   {transactions.data.data.map((t) => {
                     const a = data.accounts.find((a) => a.id === t.account_id),
-                      linked = data.loan_payments.some((p) => p.transaction_id === t.id);
+                      linked = data.loan_payments.some((p) => p.transaction_id === t.id),
+                      incoming =
+                        !!scopedAccountId &&
+                        t.type === 'transfer' &&
+                        t.to_account_id === scopedAccountId,
+                      positive = t.type === 'income' || incoming,
+                      before = incoming
+                        ? (t.to_balance_before ?? t.balance_before)
+                        : t.balance_before,
+                      after = incoming ? (t.to_balance_after ?? t.balance_after) : t.balance_after;
                     return (
                       <tr key={t.id}>
                         <td className="nowrap muted">{displayDate(t.date)}</td>
                         <td>
-                          <strong>{t.note || t.type}</strong>
+                          <button
+                            className="transaction-title"
+                            aria-label={`View transaction: ${t.note || t.type}`}
+                            onClick={() => setDetails(t)}
+                          >
+                            <strong>{t.note || t.type}</strong>
+                          </button>
                           <div className="tag-list">
                             {t.tags.map((tag) => (
                               <span key={tag} className="tag">
@@ -185,8 +231,12 @@ export function Transactions() {
                         </td>
                         <td>
                           <span className={`badge ${t.type}`}>
-                            {data.categories.find((c) => c.id === t.category_id)?.name ??
-                              'Transfer'}
+                            {t.type === 'transfer' && scopedAccountId
+                              ? incoming
+                                ? 'Transfer in'
+                                : 'Transfer out'
+                              : (data.categories.find((c) => c.id === t.category_id)?.name ??
+                                'Transfer')}
                           </span>
                         </td>
                         <td>
@@ -197,14 +247,45 @@ export function Transactions() {
                             </small>
                           )}
                         </td>
-                        <td
-                          className={`align-right amount-cell ${t.type === 'income' ? 'positive' : ''}`}
-                        >
-                          {t.type === 'income' ? '+' : t.type === 'expense' ? '−' : ''}
+                        <td className={`align-right amount-cell ${positive ? 'positive' : ''}`}>
+                          {positive ? '+' : t.type === 'expense' || scopedAccountId ? '−' : ''}
                           <Money value={t.amount} currency={a?.currency} />
                         </td>
+                        {[
+                          {
+                            key: 'before',
+                            amount: before,
+                            destination: scopedAccountId ? null : t.to_balance_before,
+                          },
+                          {
+                            key: 'after',
+                            amount: after,
+                            destination: scopedAccountId ? null : t.to_balance_after,
+                          },
+                        ].map((balance) => (
+                          <td className="align-right balance-cell" key={balance.key}>
+                            <span className="sr-only">{selectedAccount?.name ?? a?.name}: </span>
+                            <Money value={balance.amount} currency={a?.currency} />
+                            {balance.destination !== null && (
+                              <small className="block muted">
+                                <span className="sr-only">
+                                  {data.accounts.find((a) => a.id === t.to_account_id)?.name}:{' '}
+                                </span>
+                                <Money value={balance.destination} currency={a?.currency} />
+                              </small>
+                            )}
+                          </td>
+                        ))}
                         <td>
                           <div className="row-actions">
+                            <button
+                              className="icon-btn"
+                              aria-label={`View details for ${t.note || t.type}`}
+                              title="View details"
+                              onClick={() => setDetails(t)}
+                            >
+                              <Eye size={15} aria-hidden="true" />
+                            </button>
                             {!linked && (
                               <button
                                 className="icon-btn"
@@ -215,7 +296,7 @@ export function Transactions() {
                                 <Pencil size={15} />
                               </button>
                             )}
-                            <DeleteButton path={`/transactions/${t.id}`} />
+                            <DeleteButton path={`/transactions/${t.id}`} iconOnly />
                           </div>
                         </td>
                       </tr>
@@ -255,10 +336,23 @@ export function Transactions() {
           </Empty>
         )}
       </section>
+      {currentDetails && (
+        <TransactionDetails
+          transaction={currentDetails}
+          data={data}
+          onClose={() => setDetails(null)}
+          onEdit={() => {
+            setDetails(null);
+            setEdit(currentDetails);
+          }}
+        />
+      )}
       {edit && (
         <TransactionDialog
           data={data}
+          userId={user.id}
           existing={edit === true ? undefined : edit}
+          defaultAccountId={scopedAccountId}
           onClose={() => setEdit(null)}
         />
       )}

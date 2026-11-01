@@ -12,26 +12,32 @@ import {
   contributionInput,
   budgetInput,
   paymentInput,
+  currencyInput,
   importSchema,
   transactionQuery,
+  tagSearchQuery,
   listQuery,
   monthSchema,
   idSchema,
   dateSchema,
   monthlyInterest,
   accountBalance,
+  transactionBalanceHistory,
   decimalMoney,
   escapeCsv,
   type Dataset,
   type Account,
+  type AccountDetail,
   type Transaction,
   type Payment,
 } from '@folio/shared';
 import type { Env } from './types';
 import { readSession } from './auth';
 import authRoutes from './auth-routes';
+import { canonicalizeTags, searchTags } from './tags';
 import {
   loadData,
+  accountDeletionReason,
   storageId,
   insert,
   bulkInsert,
@@ -65,7 +71,11 @@ const fail = (
   details?: unknown,
 ) => c.json({ error: { code, message, ...(details ? { details } : {}) } }, status);
 const now = () => new Date().toISOString();
-const record = (body: Row) => ({ ...body, id: crypto.randomUUID(), created_at: now() });
+const record = (body: Row): Row & { id: string; created_at: string } => ({
+  ...body,
+  id: crypto.randomUUID(),
+  created_at: now(),
+});
 const parseId = (c: Ctx) => idSchema.parse(c.req.param('id'));
 
 app.use('*', async (c, next) => {
@@ -136,6 +146,51 @@ function page<T>(rows: T[], query: { page: number; limit: number }) {
   };
 }
 app.get(`${prefix}/snapshot`, async (c) => c.json(await loadData(c.env.DB, c.get('user').id)));
+app.get(`${prefix}/tags`, async (c) => {
+  const query = tagSearchQuery.parse({ ...c.req.query(), exclude: c.req.queries('exclude') ?? [] });
+  return c.json({ data: await searchTags(c.env.DB, c.get('user').id, query) });
+});
+app.get(`${prefix}/accounts/:id`, async (c) => {
+  const id = parseId(c),
+    data = await loadData(c.env.DB, c.get('user').id),
+    account = data.accounts.find((account) => account.id === id);
+  if (!account) return fail(c, 'NOT_FOUND', 'Account not found', 404);
+  const stats = { income: 0, expense: 0, transfer_in: 0, transfer_out: 0, transaction_count: 0 };
+  for (const transaction of data.transactions) {
+    if (transaction.account_id === id) {
+      stats.transaction_count++;
+      if (transaction.type === 'income') stats.income += transaction.amount;
+      else if (transaction.type === 'expense') stats.expense += transaction.amount;
+      else stats.transfer_out += transaction.amount;
+    } else if (transaction.type === 'transfer' && transaction.to_account_id === id) {
+      stats.transaction_count++;
+      stats.transfer_in += transaction.amount;
+    }
+  }
+  return c.json({
+    account: {
+      ...account,
+      balance:
+        account.type === 'loan'
+          ? loanDetails(data, id).outstanding
+          : accountBalance(account, data.transactions),
+    },
+    stats,
+    goals: data.goals.filter((goal) => goal.account_id === id),
+    delete_reason: accountDeletionReason(data, id),
+  } satisfies AccountDetail);
+});
+app.put(`${prefix}/settings/currency`, async (c) => {
+  const { currency } = currencyInput.parse(await c.req.json()),
+    userId = c.get('user').id;
+  // One atomic batch changes the workspace unit, including archived accounts and loans.
+  // Monetary values and payment allocations are deliberately left untouched.
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET currency=? WHERE id=?').bind(currency, userId),
+    c.env.DB.prepare('UPDATE accounts SET currency=? WHERE user_id=?').bind(currency, userId),
+  ]);
+  return c.json({ currency });
+});
 app.get(`${prefix}/overview`, async (c) => {
   const q = z.object({ month: monthSchema, today: dateSchema }).parse(c.req.query());
   return c.json(overview(await loadData(c.env.DB, c.get('user').id), q.month, q.today));
@@ -145,7 +200,7 @@ app.get(`${prefix}/reports`, async (c) => {
     .object({ year: z.coerce.number().int().min(1900).max(9999), month: monthSchema.optional() })
     .parse(c.req.query());
   const data = await loadData(c.env.DB, c.get('user').id),
-    ids = new Set(data.accounts.filter((a) => a.currency === 'INR').map((a) => a.id));
+    ids = new Set(data.accounts.filter((a) => a.currency === data.currency).map((a) => a.id));
   const tx = data.transactions.filter(
     (t) =>
       ids.has(t.account_id) &&
@@ -153,7 +208,7 @@ app.get(`${prefix}/reports`, async (c) => {
       (q.month ? t.date.startsWith(q.month) : t.date.startsWith(String(q.year))),
   );
   return c.json({
-    currency: 'INR',
+    currency: data.currency,
     income: tx.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0),
     expense: tx.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0),
     categories: data.categories.map((c) => ({
@@ -183,7 +238,7 @@ for (const [path, table, schema] of resources) {
       rows = data.accounts.map((a) => ({ ...a, balance: accountBalance(a, data.transactions) }));
     if (table === 'transactions') {
       const f = transactionQuery.parse(c.req.query());
-      rows = data.transactions
+      rows = transactionBalanceHistory(data.accounts, data.transactions)
         .filter(
           (t) =>
             (!f.from || t.date >= f.from) &&
@@ -197,15 +252,22 @@ for (const [path, table, schema] of resources) {
                 .toLowerCase()
                 .includes(f.search.toLowerCase())),
         )
-        .sort((a, b) => b.date.localeCompare(a.date) || b.created_at.localeCompare(a.created_at));
+        .reverse();
     }
     return c.json(page(rows, { page: q.page, limit: q.limit }));
   });
   app.post(`${prefix}/${path}`, async (c) => {
-    const body = schema.parse(await c.req.json()) as Row,
-      row = record(body),
+    const input = await c.req.json(),
+      body = schema.parse(input) as Row;
+    if (table === 'transactions')
+      body.tags = await canonicalizeTags(c.env.DB, c.get('user').id, body.tags as string[]);
+    const row = record(body),
       data = await loadData(c.env.DB, c.get('user').id);
-    if (table === 'accounts') validateAccount(row as Account, data);
+    if (table === 'accounts') {
+      assert(!input.currency || input.currency === data.currency, 'Change currency in Settings');
+      row.currency = data.currency;
+      validateAccount(row as Account, data);
+    }
     if (table === 'transactions') validateTransaction(row as Transaction, data);
     if (table === 'goals' && body.account_id)
       assert(
@@ -219,12 +281,19 @@ for (const [path, table, schema] of resources) {
   });
   app.put(`${prefix}/${path}/:id`, async (c) => {
     const id = parseId(c),
-      body = schema.parse(await c.req.json()) as Row,
+      input = await c.req.json(),
+      body = schema.parse(input) as Row,
       data = await loadData(c.env.DB, c.get('user').id),
       old = data[table].find((r) => r.id === id);
     if (!old) return fail(c, 'NOT_FOUND', 'Record not found', 404);
+    if (table === 'transactions')
+      body.tags = await canonicalizeTags(c.env.DB, c.get('user').id, body.tags as string[]);
     if (table === 'transactions' && data.loan_payments.some((p) => p.transaction_id === id))
       throw new DomainError('Remove the latest loan payment and record it again to change it');
+    if (table === 'accounts') {
+      assert(!input.currency || input.currency === data.currency, 'Change currency in Settings');
+      body.currency = data.currency;
+    }
     const row = { ...body, id, created_at: old.created_at };
     if (table === 'accounts') validateAccount(row as Account, data, true);
     if (table === 'transactions') validateTransaction(row as Transaction, data);
@@ -243,6 +312,20 @@ for (const [path, table, schema] of resources) {
     const id = parseId(c),
       data = await loadData(c.env.DB, c.get('user').id);
     if (!data[table].some((r) => r.id === id)) return fail(c, 'NOT_FOUND', 'Record not found', 404);
+    if (table === 'accounts') {
+      const reason = accountDeletionReason(data, id);
+      if (reason) throw new DomainError(reason, 409);
+    }
+    if (
+      table === 'categories' &&
+      (data.transactions.some((t) => t.category_id === id) ||
+        data.budgets.some((b) => b.category_id === id))
+    ) {
+      throw new DomainError(
+        'This category is used by transactions or budgets. Archive it to hide it without losing history.',
+        409,
+      );
+    }
     if (table === 'transactions') {
       const payment = data.loan_payments.find((p) => p.transaction_id === id);
       if (payment) {
@@ -272,8 +355,11 @@ app.get(`${prefix}/loans`, async (c) => {
   );
 });
 app.post(`${prefix}/loans`, async (c) => {
-  const row = record(accountInput.parse({ ...((await c.req.json()) as Row), type: 'loan' })),
+  const input = (await c.req.json()) as Row,
+    row = record(accountInput.parse({ ...input, type: 'loan' })),
     data = await loadData(c.env.DB, c.get('user').id);
+  assert(!input.currency || input.currency === data.currency, 'Change currency in Settings');
+  row.currency = data.currency;
   validateAccount(row as Account, data);
   await insert(c.env.DB, c.get('user').id, 'accounts', row).run();
   return c.json(row, 201);
@@ -447,7 +533,7 @@ app.get(`${prefix}/export/transactions.csv`, async (c) => {
         t.date,
         t.type,
         decimalMoney(t.amount),
-        data.accounts.find((a) => a.id === t.account_id)?.currency ?? 'INR',
+        data.accounts.find((a) => a.id === t.account_id)?.currency ?? data.currency,
         data.accounts.find((a) => a.id === t.account_id)?.name ?? '',
         data.accounts.find((a) => a.id === t.to_account_id)?.name ?? '',
         data.categories.find((a) => a.id === t.category_id)?.name ?? '',
@@ -463,19 +549,26 @@ app.get(`${prefix}/export/transactions.csv`, async (c) => {
 });
 app.post(`${prefix}/import`, async (c) => {
   const b = importSchema.parse(await c.req.json());
+  const existing = await loadData(c.env.DB, c.get('user').id),
+    currency = b.mode === 'replace' ? b.backup.data.currency : existing.currency;
   let data = b.backup.data;
   if (b.mode === 'merge') {
-    const existing = await loadData(c.env.DB, c.get('user').id);
-    data = Object.fromEntries(
-      tables.map((t) => [
-        t,
-        [...new Map([...existing[t], ...data[t]].map((r) => [r.id, r])).values()],
-      ]),
-    ) as Dataset;
+    data = {
+      ...data,
+      ...Object.fromEntries(
+        tables.map((t) => [
+          t,
+          [...new Map([...existing[t], ...data[t]].map((r) => [r.id, r])).values()],
+        ]),
+      ),
+    };
   }
+  data = { ...data, currency, accounts: data.accounts.map((a) => ({ ...a, currency })) };
   validateDataset(data);
   // D1 batch is atomic: either all deletes/upserts commit or the existing data remains.
-  const statements: D1PreparedStatement[] = [];
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare('UPDATE users SET currency=? WHERE id=?').bind(currency, c.get('user').id),
+  ];
   if (b.mode === 'replace')
     for (const t of [...tables].reverse())
       statements.push(c.env.DB.prepare(`DELETE FROM ${t} WHERE user_id=?`).bind(c.get('user').id));

@@ -7,14 +7,13 @@ import {
   TrendingUp,
   Landmark,
   Sprout,
-  Plus,
   ChevronRight,
 } from 'lucide-react';
 import { useWorkspace, MonthPicker } from '../App';
 import { displayDate, percent } from '../lib';
 import { PageHeading, Money, Empty, Progress, SectionTitle } from '../components/ui';
 import { CashFlowChart, ExpenseChart, WealthChart, InvestmentChart } from '../components/charts';
-export function Dashboard({ onQuick }: { onQuick: () => void }) {
+export function Dashboard() {
   const { view, data, month } = useWorkspace();
   const monthName = new Date(`${month}-01T12:00:00`).toLocaleDateString('en-IN', {
     month: 'long',
@@ -29,10 +28,6 @@ export function Dashboard({ onQuick }: { onQuick: () => void }) {
         action={
           <div className="heading-actions">
             <MonthPicker />
-            <button className="btn primary" onClick={onQuick} disabled={!navigator.onLine}>
-              <Plus size={17} />
-              Quick add
-            </button>
           </div>
         }
       />
@@ -43,7 +38,7 @@ export function Dashboard({ onQuick }: { onQuick: () => void }) {
               <Wallet size={17} />
               TOTAL NET WORTH
             </span>
-            <span className="pill light">INR</span>
+            <span className="pill light">{view.currency}</span>
           </div>
           <div className="net-worth-number">
             <Money value={view.net_worth} />
@@ -262,10 +257,7 @@ export function Dashboard({ onQuick }: { onQuick: () => void }) {
           />
         </section>
       </div>
-      <p className="data-note">
-        Dashboard totals are in INR. Other currencies are shown separately in Accounts. Valuations
-        are manual snapshots.
-      </p>
+      <p className="data-note">Valuations are manual snapshots.</p>
     </>
   );
 }

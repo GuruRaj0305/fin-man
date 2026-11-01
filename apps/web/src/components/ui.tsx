@@ -7,13 +7,16 @@ import {
   type ReactElement,
   type ReactNode,
   type FormEvent,
+  type ChangeEventHandler,
 } from 'react';
-import { AlertCircle, ArrowRight, Loader2, X, Plus, WalletCards } from 'lucide-react';
+import { AlertCircle, ArrowRight, Loader2, X, Plus, Trash2, WalletCards } from 'lucide-react';
 import { formatMoney, decimalMoney, toMinor } from '@folio/shared';
 import { useSave } from '../lib';
+import { useCurrency, currencySymbol } from '../currency';
 
-export function Money({ value, currency = 'INR' }: { value: number; currency?: string }) {
-  return <>{formatMoney(value, currency)}</>;
+export function Money({ value, currency }: { value: number; currency?: string }) {
+  const workspaceCurrency = useCurrency();
+  return <>{formatMoney(value, currency ?? workspaceCurrency)}</>;
 }
 export function Empty({
   title = 'A fresh start',
@@ -137,17 +140,20 @@ export function AmountField({
   value,
   required = true,
   min = '0.01',
+  onChange,
 }: {
   label?: string;
   name?: string;
   value?: number;
   required?: boolean;
   min?: string;
+  onChange?: ChangeEventHandler<HTMLInputElement>;
 }) {
+  const currency = useCurrency();
   return (
     <Field label={label}>
       <div className="amount-input">
-        <span>₹</span>
+        <span title={currency}>{currencySymbol(currency)}</span>
         <input
           aria-label={label}
           name={name}
@@ -158,6 +164,7 @@ export function AmountField({
           max="10000000000"
           required={required}
           defaultValue={value !== undefined ? decimalMoney(value) : undefined}
+          onChange={onChange}
           placeholder="0.00"
         />
       </div>
@@ -173,6 +180,8 @@ export function Dialog({
   onSubmit,
   submit = 'Save changes',
   wide = false,
+  showCancel = true,
+  submitDisabled = false,
 }: {
   title: string;
   children: ReactNode;
@@ -180,6 +189,8 @@ export function Dialog({
   onSubmit: (f: FormData) => Promise<unknown>;
   submit?: string;
   wide?: boolean;
+  showCancel?: boolean;
+  submitDisabled?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null),
     [error, setError] = useState(''),
@@ -191,6 +202,7 @@ export function Dialog({
   }, []);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (pending || submitDisabled || !navigator.onLine) return;
     setPending(true);
     setError('');
     try {
@@ -229,10 +241,16 @@ export function Dialog({
           )}
         </div>
         <div className="dialog-actions">
-          <button className="btn secondary" type="button" onClick={onClose} disabled={pending}>
-            Cancel
-          </button>
-          <button className="btn primary" type="submit" disabled={pending || !navigator.onLine}>
+          {showCancel && (
+            <button className="btn secondary" type="button" onClick={onClose} disabled={pending}>
+              Cancel
+            </button>
+          )}
+          <button
+            className="btn primary"
+            type="submit"
+            disabled={pending || submitDisabled || !navigator.onLine}
+          >
             {pending ? <Loader2 className="spin" size={16} /> : null}
             {pending ? 'Saving…' : submit}
           </button>
@@ -245,10 +263,14 @@ export function DeleteButton({
   path,
   label = 'Delete',
   onDone,
+  iconOnly = false,
+  disabledReason,
 }: {
   path: string;
   label?: string;
   onDone?: () => void;
+  iconOnly?: boolean;
+  disabledReason?: string;
 }) {
   const [open, setOpen] = useState(false),
     save = useSave();
@@ -256,16 +278,19 @@ export function DeleteButton({
     <>
       <button
         type="button"
-        className="text-btn danger"
-        disabled={!navigator.onLine}
+        className={iconOnly ? 'icon-btn danger' : 'text-btn danger'}
+        aria-label={label}
+        title={disabledReason ?? (iconOnly ? label : undefined)}
+        disabled={!!disabledReason || !navigator.onLine}
         onClick={() => setOpen(true)}
       >
-        {label}
+        {iconOnly ? <Trash2 size={15} aria-hidden="true" /> : label}
       </button>
       {open && (
         <Dialog
           title="Delete this record?"
           submit="Delete permanently"
+          submitDisabled={!!disabledReason}
           onClose={() => setOpen(false)}
           onSubmit={async () => {
             await save.mutateAsync({ path, method: 'DELETE' });
@@ -273,8 +298,8 @@ export function DeleteButton({
           }}
         >
           <p>
-            This permanently removes the record and its related entries. Export a backup first if
-            you may need it later.
+            {disabledReason ??
+              'This permanently removes the record and its related entries. Export a backup first if you may need it later.'}
           </p>
         </Dialog>
       )}

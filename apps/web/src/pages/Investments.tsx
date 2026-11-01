@@ -259,10 +259,9 @@ export function InvestmentDetail() {
       <div className="info-card">
         <Sprout size={22} />
         <p>
-          Holdings are tracked in INR, separately from account cash. Record account withdrawals
-          yourself to avoid double counting assets. Return is profit ÷ net invested; it is undefined
-          when net invested is zero or negative. XIRR can have multiple solutions for mixed cash
-          flows.
+          Holdings are tracked separately from account cash. Record account withdrawals yourself to
+          avoid double counting assets. Return is profit ÷ net invested; it is undefined when net
+          invested is zero or negative. XIRR can have multiple solutions for mixed cash flows.
         </p>
       </div>
       <div className="row-actions">

@@ -23,7 +23,7 @@ it('preserves the legacy owner, financial records and sessions while enabling em
         "INSERT INTO transactions(id,date,type,amount,account_id,category_id,created_at) VALUES('old_tx','2026-10-01','expense',100,'old_bank','cat_food','2026-10-01T00:00:00Z')",
       ),
     ]);
-    await applyMigrations(db, ['0003_multi_user.sql']);
+    await applyMigrations(db, ['0003_multi_user.sql', '0004_workspace_currency.sql']);
     const owner = client(db, `folio_session=${token}.${await sign(token, testSecret)}`);
     expect(await owner.data<AuthStatus>('/auth/status')).toMatchObject({
       authenticated: true,
@@ -32,6 +32,7 @@ it('preserves the legacy owner, financial records and sessions while enabling em
       user: { id: 1, role: 'admin', email: null },
     });
     const data = await owner.data<Dataset>('/snapshot');
+    expect(data.currency).toBe('INR');
     expect(data.accounts[0]).toMatchObject({
       id: 'old_bank',
       name: 'Preserved bank',

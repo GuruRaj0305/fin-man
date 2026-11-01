@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Download, Upload, Plus, ShieldCheck, Moon, Database, Pencil } from 'lucide-react';
 import {
   backupSchema,
+  currencies,
   parseCsv,
   toMinor,
   transactionInput,
@@ -12,9 +14,10 @@ import {
 import { useWorkspace } from '../App';
 import { api, download, useSave, today } from '../lib';
 import { CategoryDialog } from '../components/forms';
-import { PageHeading, SectionTitle, Field, Dialog, str } from '../components/ui';
+import { PageHeading, SectionTitle, Field, Dialog, DeleteButton, str } from '../components/ui';
 export function SettingsPage() {
   const { data, theme, setTheme, user } = useWorkspace(),
+    [searchParams, setSearchParams] = useSearchParams(),
     save = useSave(),
     [category, setCategory] = useState<Category | true | null>(null),
     [password, setPassword] = useState(false),
@@ -24,6 +27,13 @@ export function SettingsPage() {
     [csv, setCsv] = useState<string[][] | null>(null),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
+  const requestedType = searchParams.get('new-category'),
+    newCategoryType =
+      requestedType === 'income' || requestedType === 'expense' ? requestedType : null,
+    usedCategories = new Set([
+      ...data.transactions.map((t) => t.category_id),
+      ...data.budgets.map((b) => b.category_id),
+    ]);
   async function readFile(file: File | undefined, kind: 'json' | 'csv') {
     if (!file) return;
     setError('');
@@ -63,8 +73,8 @@ export function SettingsPage() {
       )}
       <div className="settings-grid">
         <section className="panel">
-          <SectionTitle title="A little atmosphere" action={<Moon size={20} />} />
-          <p className="muted">Choose how Folio looks on this device.</p>
+          <SectionTitle title="Workspace preferences" action={<Moon size={20} />} />
+          <p className="muted">Choose your appearance and workspace currency.</p>
           <Field label="Appearance">
             <select value={theme} onChange={(e) => setTheme(e.target.value)}>
               <option value="system">Follow system</option>
@@ -72,6 +82,40 @@ export function SettingsPage() {
               <option value="dark">Dark</option>
             </select>
           </Field>
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setError('');
+              setNotice('');
+              try {
+                await save.mutateAsync({
+                  path: '/settings/currency',
+                  method: 'PUT',
+                  body: { currency: str(new FormData(event.currentTarget), 'currency') },
+                });
+                setNotice('Currency updated throughout your workspace. Amounts are unchanged.');
+              } catch (e) {
+                setError((e as Error).message);
+              }
+            }}
+          >
+            <Field label="Currency">
+              <select name="currency" key={data.currency} defaultValue={data.currency}>
+                {currencies.map((code) => (
+                  <option key={code} value={code}>
+                    {code} · {new Intl.DisplayNames(['en'], { type: 'currency' }).of(code)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <p className="hint">
+              Applies to all accounts, transactions, loans, investments, goals and budgets. Existing
+              amounts stay the same; no exchange-rate conversion is applied.
+            </p>
+            <button className="btn secondary" disabled={save.isPending || !navigator.onLine}>
+              {save.isPending ? 'Saving…' : 'Apply currency'}
+            </button>
+          </form>
         </section>
         <section className="panel">
           <SectionTitle title="Your private space" action={<ShieldCheck size={20} />} />
@@ -174,7 +218,7 @@ export function SettingsPage() {
       <section className="panel">
         <SectionTitle
           title="Everything in its place"
-          description="Categories for the way you earn and spend."
+          description="Your own income and expense categories. Delete unused ones, or archive those with history."
           action={
             <button className="btn secondary" onClick={() => setCategory(true)}>
               <Plus size={16} />
@@ -218,6 +262,7 @@ export function SettingsPage() {
                       >
                         {c.archived ? 'Restore' : 'Archive'}
                       </button>
+                      {!usedCategories.has(c.id) && <DeleteButton path={`/categories/${c.id}`} />}
                     </div>
                   </div>
                 ))}
@@ -225,10 +270,18 @@ export function SettingsPage() {
           ))}
         </div>
       </section>
-      {category && (
+      {(category || newCategoryType) && (
         <CategoryDialog
-          existing={category === true ? undefined : category}
-          onClose={() => setCategory(null)}
+          existing={category && category !== true ? category : undefined}
+          defaultType={newCategoryType ?? 'expense'}
+          onClose={() => {
+            setCategory(null);
+            if (newCategoryType) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('new-category');
+              setSearchParams(next, { replace: true });
+            }
+          }}
         />
       )}
       {password && (
@@ -280,7 +333,11 @@ export function SettingsPage() {
         >
           <p>
             Backup from {new Date(backup.exported_at).toLocaleString()} ·{' '}
-            {Object.values(backup.data).reduce((s, rows) => s + rows.length, 0)} records.
+            {Object.values(backup.data).reduce(
+              (s, rows) => s + (Array.isArray(rows) ? rows.length : 0),
+              0,
+            )}{' '}
+            records.
           </p>
           <Field label="Import method">
             <select
@@ -294,6 +351,10 @@ export function SettingsPage() {
               <option value="replace">Replace · delete all existing finance data first</option>
             </select>
           </Field>
+          <p className="hint">
+            Replace restores the backup’s currency. Merge uses your current workspace currency.
+            Imported amounts are kept unchanged.
+          </p>
           <p className={mode === 'replace' ? 'form-error' : 'hint'}>
             {mode === 'replace'
               ? 'This permanently replaces all existing financial records. Export a backup before continuing.'
