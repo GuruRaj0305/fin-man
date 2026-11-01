@@ -25,11 +25,17 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+export async function api<T>(
+  path: string,
+  method = 'GET',
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   if (method !== 'GET' && !navigator.onLine)
     throw new Error('You are offline. Connect to save changes.');
   const response = await fetch(`${base}${path}`, {
     method,
+    signal,
     credentials: 'same-origin',
     headers:
       method === 'GET' ? {} : { 'Content-Type': 'application/json', 'X-Finance-Client': 'web' },
@@ -61,8 +67,10 @@ export function useSave() {
     }) => api(path, method, body),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['snapshot'] });
+      await qc.invalidateQueries({ queryKey: ['account-details'] });
       await qc.invalidateQueries({ queryKey: ['overview'] });
       await qc.invalidateQueries({ queryKey: ['transactions'] });
+      await qc.invalidateQueries({ queryKey: ['tags'] });
       await qc.invalidateQueries({ queryKey: ['reports'] });
     },
   });

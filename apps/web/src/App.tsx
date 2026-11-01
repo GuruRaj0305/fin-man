@@ -32,11 +32,13 @@ import { TransactionDialog } from './components/forms';
 import { Dashboard } from './pages/Dashboard';
 import { Transactions } from './pages/Transactions';
 import { Accounts, Loans, LoanDetail } from './pages/Accounts';
+import { AccountDetail } from './pages/AccountDetail';
 import { Investments, InvestmentDetail } from './pages/Investments';
 import { Goals, Budgets } from './pages/Planning';
 import { Reports } from './pages/Reports';
 import { SettingsPage } from './pages/Settings';
 import { AdminUsers } from './pages/AdminUsers';
+import { CurrencyContext } from './currency';
 
 type Workspace = {
   user: User;
@@ -595,54 +597,63 @@ function WorkspaceApp({
               }}
             />
           ) : (
-            <WorkspaceContext.Provider
-              value={{
-                user,
-                data: snapshot.data,
-                view: overview.data,
-                current: current.data,
-                month,
-                setMonth,
-                theme,
-                setTheme,
-              }}
-            >
-              <Routes>
-                <Route path="/" element={<Dashboard onQuick={() => setQuick(true)} />} />
-                <Route path="/transactions" element={<Transactions />} />
-                <Route path="/accounts" element={<Accounts />} />
-                <Route path="/loans" element={<Loans />} />
-                <Route path="/loans/:id" element={<LoanDetail />} />
-                <Route path="/investments" element={<Investments />} />
-                <Route path="/investments/:id" element={<InvestmentDetail />} />
-                <Route path="/goals" element={<Goals />} />
-                <Route path="/budgets" element={<Budgets />} />
-                <Route path="/reports" element={<Reports />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route
-                  path="/admin/users"
-                  element={
-                    user.role === 'admin' ? (
-                      <AdminUsers />
-                    ) : (
-                      <ErrorState error={new Error('Administrator access is required.')} />
-                    )
-                  }
-                />
-                <Route
-                  path="*"
-                  element={
-                    <div className="empty">
-                      <h1>A little off track.</h1>
-                      <Link className="btn primary" to="/">
-                        Back to overview
-                      </Link>
-                    </div>
-                  }
-                />
-              </Routes>
-              {quick && <TransactionDialog data={snapshot.data} onClose={() => setQuick(false)} />}
-            </WorkspaceContext.Provider>
+            <CurrencyContext.Provider value={snapshot.data.currency}>
+              <WorkspaceContext.Provider
+                value={{
+                  user,
+                  data: snapshot.data,
+                  view: overview.data,
+                  current: current.data,
+                  month,
+                  setMonth,
+                  theme,
+                  setTheme,
+                }}
+              >
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/transactions" element={<Transactions />} />
+                  <Route path="/accounts" element={<Accounts />} />
+                  <Route path="/accounts/:id" element={<AccountDetail />} />
+                  <Route path="/loans" element={<Loans />} />
+                  <Route path="/loans/:id" element={<LoanDetail />} />
+                  <Route path="/investments" element={<Investments />} />
+                  <Route path="/investments/:id" element={<InvestmentDetail />} />
+                  <Route path="/goals" element={<Goals />} />
+                  <Route path="/budgets" element={<Budgets />} />
+                  <Route path="/reports" element={<Reports />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                  <Route
+                    path="/admin/users"
+                    element={
+                      user.role === 'admin' ? (
+                        <AdminUsers />
+                      ) : (
+                        <ErrorState error={new Error('Administrator access is required.')} />
+                      )
+                    }
+                  />
+                  <Route
+                    path="*"
+                    element={
+                      <div className="empty">
+                        <h1>A little off track.</h1>
+                        <Link className="btn primary" to="/">
+                          Back to overview
+                        </Link>
+                      </div>
+                    }
+                  />
+                </Routes>
+                {quick && (
+                  <TransactionDialog
+                    data={snapshot.data}
+                    userId={user.id}
+                    onClose={() => setQuick(false)}
+                  />
+                )}
+              </WorkspaceContext.Provider>
+            </CurrencyContext.Provider>
           )}
         </main>
         <footer className="page-footer">
@@ -650,6 +661,17 @@ function WorkspaceApp({
           <span>Folio · Personal finance</span>
         </footer>
       </div>
+      <button
+        type="button"
+        className="btn primary floating-quick-add"
+        aria-label="Quick add transaction"
+        aria-haspopup="dialog"
+        disabled={!snapshot.data || !navigator.onLine}
+        onClick={() => setQuick(true)}
+      >
+        <Plus size={22} aria-hidden="true" />
+        Quick add
+      </button>
       <nav className="bottom-nav" aria-label="Mobile navigation">
         <NavLink to="/" end>
           <LayoutDashboard size={21} />

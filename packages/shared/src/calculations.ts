@@ -1,4 +1,4 @@
-import type { Account, Transaction, Entry, Payment } from './schemas';
+import type { Account, Transaction, TransactionWithBalances, Entry, Payment } from './schemas';
 import { MAX_MONEY } from './schemas';
 
 /** Parse decimal currency text exactly; never multiply floating-point currency. */
@@ -33,9 +33,56 @@ export function accountBalance(
     if (t.account_id === account.id) n += BigInt(t.amount) * (t.type === 'income' ? 1n : -1n);
     if (t.type === 'transfer' && t.to_account_id === account.id) n += BigInt(t.amount);
   }
-  if (n > BigInt(Number.MAX_SAFE_INTEGER) || n < BigInt(Number.MIN_SAFE_INTEGER))
+  return safeBalance(n);
+}
+function safeBalance(value: bigint): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))
     throw new Error('Balance exceeds safe range');
-  return Number(n);
+  return Number(value);
+}
+
+/** Derive the complete ledger before applying any display filters or pagination. */
+export function transactionBalanceHistory(
+  accounts: readonly Pick<Account, 'id' | 'opening_balance'>[],
+  transactions: readonly Transaction[],
+): TransactionWithBalances[] {
+  const balances = new Map(
+    accounts.map((account) => [account.id, BigInt(account.opening_balance)]),
+  );
+  // Cache parsed timestamps once; IDs provide a portable tie-break for identical timestamps.
+  const ordered = transactions
+    .map((transaction) => ({ transaction, created: Date.parse(transaction.created_at) }))
+    .sort(
+      (a, b) =>
+        a.transaction.date.localeCompare(b.transaction.date) ||
+        a.created - b.created ||
+        a.transaction.id.localeCompare(b.transaction.id),
+    );
+  return ordered.map(({ transaction: t }) => {
+    const before = balances.get(t.account_id);
+    if (before === undefined) throw new Error('Transaction account is missing');
+    const delta = BigInt(t.amount),
+      after = before + (t.type === 'income' ? delta : -delta);
+    balances.set(t.account_id, after);
+    let toBefore: bigint | null = null,
+      toAfter: bigint | null = null;
+    if (t.type === 'transfer') {
+      if (!t.to_account_id || t.to_account_id === t.account_id)
+        throw new Error('Transfer needs a different destination account');
+      const destination = balances.get(t.to_account_id);
+      if (destination === undefined) throw new Error('Destination account is missing');
+      toBefore = destination;
+      toAfter = toBefore + delta;
+      balances.set(t.to_account_id, toAfter);
+    }
+    return {
+      ...t,
+      balance_before: safeBalance(before),
+      balance_after: safeBalance(after),
+      to_balance_before: toBefore === null ? null : safeBalance(toBefore),
+      to_balance_after: toAfter === null ? null : safeBalance(toAfter),
+    };
+  });
 }
 function roundDiv(n: bigint, d: bigint): bigint {
   return (n + d / 2n) / d;

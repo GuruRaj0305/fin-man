@@ -4,6 +4,7 @@ import type {
   AuthStatus,
   Dataset,
   Backup,
+  Category,
   Account,
   Holding,
   UserMonitor,
@@ -30,6 +31,84 @@ async function accounts() {
 const bankInput = { name: 'Private checking', type: 'bank', opening_balance: 100000 };
 
 describe('multi-user accounts and administration', () => {
+  it('lets users create and delete their own unused categories, including defaults', async () => {
+    const { owner, member } = await accounts();
+    const input = { name: 'My custom category', type: 'expense' };
+    const ownerCategory = await owner.data<Category>('/categories', 'POST', input);
+    const memberCategory = await member.data<Category>('/categories', 'POST', input);
+    expect(ownerCategory.id).not.toBe(memberCategory.id);
+    expect(
+      (await member.data<Dataset>('/snapshot')).categories.some((c) => c.id === ownerCategory.id),
+    ).toBe(false);
+    expect((await member.request(`/categories/${ownerCategory.id}`, 'DELETE')).status).toBe(404);
+    expect(
+      (
+        await member.request(`/categories/${ownerCategory.id}`, 'PUT', {
+          ...input,
+          name: 'Changed',
+        })
+      ).status,
+    ).toBe(404);
+    await member.data(`/categories/${memberCategory.id}`, 'DELETE');
+    expect(
+      (await member.data<Dataset>('/snapshot')).categories.some((c) => c.id === memberCategory.id),
+    ).toBe(false);
+    expect(
+      (await owner.data<Dataset>('/snapshot')).categories.find((c) => c.id === ownerCategory.id)
+        ?.name,
+    ).toBe(input.name);
+    await member.data('/categories/cat_food', 'DELETE');
+    expect(
+      (await member.data<Dataset>('/snapshot')).categories.some((c) => c.id === 'cat_food'),
+    ).toBe(false);
+    expect(
+      (await owner.data<Dataset>('/snapshot')).categories.some((c) => c.id === 'cat_food'),
+    ).toBe(true);
+  });
+
+  it('preserves transaction and budget history when categories are in use', async () => {
+    const { owner } = await accounts();
+    const bank = await owner.data<Account>('/accounts', 'POST', bankInput);
+    const category = await owner.data<Category>('/categories', 'POST', {
+      name: 'Used category',
+      type: 'expense',
+    });
+    await owner.data('/transactions', 'POST', {
+      date: '2026-11-01',
+      type: 'expense',
+      amount: 1234,
+      account_id: bank.id,
+      category_id: category.id,
+    });
+    const before = await owner.data<Dataset>('/snapshot');
+    const rejected = await owner.request(`/categories/${category.id}`, 'DELETE');
+    expect(rejected.status).toBe(409);
+    expect(await rejected.text()).toContain('Archive');
+    expect(await owner.data<Dataset>('/snapshot')).toEqual(before);
+    await owner.data(`/categories/${category.id}`, 'PUT', {
+      name: category.name,
+      type: category.type,
+      archived: true,
+    });
+    expect((await owner.data<Dataset>('/snapshot')).transactions).toEqual(before.transactions);
+    const budgetCategory = await owner.data<Category>('/categories', 'POST', {
+      name: 'Planned category',
+      type: 'expense',
+    });
+    const budget = await owner.data<{ id: string }>('/budgets', 'POST', {
+      category_id: budgetCategory.id,
+      month: '2026-11',
+      amount: 10000,
+    });
+    expect((await owner.request(`/categories/${budgetCategory.id}`, 'DELETE')).status).toBe(409);
+    expect((await owner.data<Dataset>('/snapshot')).budgets).toHaveLength(1);
+    await owner.data(`/budgets/${budget.id}`, 'DELETE');
+    await owner.data(`/categories/${budgetCategory.id}`, 'DELETE');
+    expect(
+      (await owner.data<Dataset>('/snapshot')).categories.some((c) => c.id === budgetCategory.id),
+    ).toBe(false);
+  });
+
   it('creates a duplicate-email signup atomically under concurrent requests', async () => {
     const owner = client(db);
     await owner.data('/auth/setup', 'POST', ownerCredentials);

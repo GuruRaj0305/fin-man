@@ -18,6 +18,7 @@ import {
 import { formatMoney } from '@folio/shared';
 import type { Overview } from '../lib';
 import { Empty } from './ui';
+import { useCurrency } from '../currency';
 const colors = [
   '#356354',
   '#b6ca85',
@@ -46,6 +47,7 @@ const yLabel = (v: number) =>
 const monthLabel = (v: string) =>
   new Date(`${v}-01T12:00:00`).toLocaleDateString('en-IN', { month: 'short' });
 export function CashFlowChart({ data }: { data: Overview['history'] }) {
+  const currency = useCurrency();
   return (
     <div
       className="chart"
@@ -71,7 +73,7 @@ export function CashFlowChart({ data }: { data: Overview['history'] }) {
             tick={{ fontSize: 10, fill: 'var(--muted)' }}
           />
           <Tooltip
-            formatter={(v) => formatMoney(Number(v))}
+            formatter={(v) => formatMoney(Number(v), currency)}
             labelFormatter={(v) => String(v)}
             contentStyle={tooltipStyle}
             cursor={{ fill: 'var(--hover)' }}
@@ -98,6 +100,7 @@ export function CashFlowChart({ data }: { data: Overview['history'] }) {
   );
 }
 export function ExpenseChart({ data }: { data: { name: string; total: number }[] }) {
+  const currency = useCurrency();
   const categories = data.filter((d) => d.total > 0);
   return categories.length ? (
     <div className="donut-layout">
@@ -118,12 +121,20 @@ export function ExpenseChart({ data }: { data: { name: string; total: number }[]
                 <Cell key={c.name} fill={colors[i % colors.length]} />
               ))}
             </Pie>
-            <Tooltip formatter={(v) => formatMoney(Number(v))} contentStyle={tooltipStyle} />
+            <Tooltip
+              formatter={(v) => formatMoney(Number(v), currency)}
+              contentStyle={tooltipStyle}
+            />
           </PieChart>
         </ResponsiveContainer>
         <div className="donut-label">
           <small>Spent this month</small>
-          <strong>{formatMoney(categories.reduce((n, c) => n + c.total, 0))}</strong>
+          <strong>
+            {formatMoney(
+              categories.reduce((n, c) => n + c.total, 0),
+              currency,
+            )}
+          </strong>
         </div>
       </div>
       <div className="category-legend">
@@ -131,7 +142,7 @@ export function ExpenseChart({ data }: { data: { name: string; total: number }[]
           <div key={c.name}>
             <span className="legend-dot" style={{ background: colors[i % colors.length] }} />
             <span>{c.name}</span>
-            <strong>{formatMoney(c.total)}</strong>
+            <strong>{formatMoney(c.total, currency)}</strong>
           </div>
         ))}
       </div>
@@ -141,6 +152,7 @@ export function ExpenseChart({ data }: { data: { name: string; total: number }[]
   );
 }
 export function WealthChart({ data }: { data: Overview['history'] }) {
+  const currency = useCurrency();
   return (
     <div className="chart" role="img" aria-label="Net worth history">
       <ResponsiveContainer width="100%" height="100%">
@@ -166,7 +178,10 @@ export function WealthChart({ data }: { data: Overview['history'] }) {
             axisLine={false}
             tick={{ fontSize: 10, fill: 'var(--muted)' }}
           />
-          <Tooltip formatter={(v) => formatMoney(Number(v))} contentStyle={tooltipStyle} />
+          <Tooltip
+            formatter={(v) => formatMoney(Number(v), currency)}
+            contentStyle={tooltipStyle}
+          />
           <Area
             isAnimationActive={false}
             name="Net worth"
@@ -186,6 +201,7 @@ export function InvestmentChart({
 }: {
   data: { date: string; value: number; invested: number }[];
 }) {
+  const currency = useCurrency();
   return (
     <div className="chart" role="img" aria-label="Investment current value versus invested amount">
       <ResponsiveContainer width="100%" height="100%">
@@ -205,7 +221,10 @@ export function InvestmentChart({
             axisLine={false}
             tick={{ fontSize: 10, fill: 'var(--muted)' }}
           />
-          <Tooltip formatter={(v) => formatMoney(Number(v))} contentStyle={tooltipStyle} />
+          <Tooltip
+            formatter={(v) => formatMoney(Number(v), currency)}
+            contentStyle={tooltipStyle}
+          />
           <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 11 }} />
           <Line
             isAnimationActive={false}

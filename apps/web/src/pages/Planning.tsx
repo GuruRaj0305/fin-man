@@ -162,7 +162,7 @@ export function Budgets() {
       <PageHeading
         eyebrow="A LITTLE INTENTION"
         title="Make space for what matters."
-        description="Gentle guardrails for your everyday spending. Budgets use INR expenses."
+        description="Gentle guardrails for your everyday spending."
         action={
           <div className="heading-actions">
             <MonthPicker />

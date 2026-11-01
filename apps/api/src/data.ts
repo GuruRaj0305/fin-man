@@ -60,14 +60,25 @@ export function decode(table: Table, row: Row, userId: number): Row {
   return row;
 }
 export async function loadData(db: D1Database, userId: number): Promise<Dataset> {
-  const results = await db.batch<Row>(
-    tables.map((t) => db.prepare(`SELECT * FROM ${t} WHERE user_id=?`).bind(userId)),
-  );
-  return datasetSchema.parse(
-    Object.fromEntries(
+  const results = await db.batch<Row>([
+    ...tables.map((t) => db.prepare(`SELECT * FROM ${t} WHERE user_id=?`).bind(userId)),
+    db.prepare('SELECT currency FROM users WHERE id=?').bind(userId),
+  ]);
+  return datasetSchema.parse({
+    ...Object.fromEntries(
       tables.map((t, i) => [t, results[i].results.map((r) => decode(t, r, userId))]),
     ),
-  );
+    currency: results[tables.length].results[0]?.currency ?? 'INR',
+  });
+}
+export function accountDeletionReason(data: Dataset, id: string): string | null {
+  if (data.transactions.some((t) => t.account_id === id || t.to_account_id === id))
+    return 'This account has transactions. Archive it instead of deleting it.';
+  if (data.goals.some((goal) => goal.account_id === id))
+    return 'This account is linked to a savings goal. Unlink the goal before deleting it.';
+  if (data.loan_payments.some((payment) => payment.loan_id === id))
+    return 'This loan has recorded payments and cannot be deleted.';
+  return null;
 }
 export function insert(
   db: D1Database,
@@ -282,7 +293,10 @@ export function validateDataset(d: Dataset) {
   for (const g of d.goals)
     if (g.account_id) {
       const a = findAccount(d, g.account_id);
-      assert(a.type === 'savings' && a.currency === 'INR', 'Goals link to INR savings accounts');
+      assert(
+        a.type === 'savings' && a.currency === d.currency,
+        'Goals link to savings accounts in your workspace currency',
+      );
     }
   for (const c of d.contributions) {
     const g = d.goals.find((g) => g.id === c.goal_id);
@@ -374,6 +388,7 @@ export function holdingDetails(data: Dataset, id: string, asOf = '9999-12-31') {
   };
 }
 export function overview(data: Dataset, month: string, today: string) {
+  const currency = data.currency;
   const end = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0))
     .toISOString()
     .slice(0, 10);
@@ -385,7 +400,7 @@ export function overview(data: Dataset, month: string, today: string) {
     for (const id of [t.account_id, t.to_account_id])
       if (id && t.date < (starts.get(id) ?? t.date)) starts.set(id, t.date);
   const tx = data.transactions.filter((t) => t.date <= asOf),
-    baseIds = new Set(data.accounts.filter((a) => a.currency === 'INR').map((a) => a.id));
+    baseIds = new Set(data.accounts.filter((a) => a.currency === currency).map((a) => a.id));
   const baseTx = tx.filter((t) => baseIds.has(t.account_id));
   const accounts = data.accounts.map((a) => ({ ...a, balance: accountBalance(a, tx) }));
   const loans = data.accounts
@@ -400,12 +415,12 @@ export function overview(data: Dataset, month: string, today: string) {
   const totalInvested = holdings.reduce((s, h) => s + h.invested, 0),
     investmentValue = holdings.reduce((s, h) => s + h.current, 0);
   const loanOutstanding = loans
-    .filter((l) => l.loan.currency === 'INR' && l.loan.start_date! <= asOf)
+    .filter((l) => l.loan.currency === currency && l.loan.start_date! <= asOf)
     .reduce((s, l) => s + l.outstanding, 0);
   // Investment accounts can hold cash; portfolio holdings represent separate manually tracked assets.
   const assets =
     accounts
-      .filter((a) => a.type !== 'loan' && a.currency === 'INR' && starts.get(a.id)! <= asOf)
+      .filter((a) => a.type !== 'loan' && a.currency === currency && starts.get(a.id)! <= asOf)
       .reduce((s, a) => s + a.balance, 0) + investmentValue;
   const monthlyTx = baseTx.filter((t) => t.date.startsWith(month));
   const income = monthlyTx.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0),
@@ -430,10 +445,10 @@ export function overview(data: Dataset, month: string, today: string) {
     const invested = currentHoldings.reduce((s, h) => s + h.invested, 0),
       value = currentHoldings.reduce((s, h) => s + h.current, 0);
     const relevant = data.accounts.filter(
-      (a) => a.currency === 'INR' && a.type !== 'loan' && starts.get(a.id)! <= cutoff,
+      (a) => a.currency === currency && a.type !== 'loan' && starts.get(a.id)! <= cutoff,
     );
     const debt = data.accounts
-      .filter((a) => a.currency === 'INR' && a.type === 'loan' && a.start_date! <= cutoff)
+      .filter((a) => a.currency === currency && a.type === 'loan' && a.start_date! <= cutoff)
       .reduce(
         (s, a) =>
           s +
@@ -480,7 +495,7 @@ export function overview(data: Dataset, month: string, today: string) {
   return {
     month,
     as_of: asOf,
-    currency: 'INR',
+    currency,
     net_worth: assets - loanOutstanding,
     income,
     expense,

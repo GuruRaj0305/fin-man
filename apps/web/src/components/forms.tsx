@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   calculateEmi,
+  normalizeTags,
   toMinor,
   type Account,
   type Transaction,
@@ -10,8 +12,11 @@ import {
   type Budget,
   type Category,
 } from '@folio/shared';
-import { useSave, today } from '../lib';
+import { api, useSave, today } from '../lib';
 import { Dialog, Field, AmountField, amount, str } from './ui';
+import { useCurrency } from '../currency';
+import { SearchableSelect } from './SearchableSelect';
+import { TagInput } from './TagInput';
 
 function cleanAccount(a: Account) {
   const { id, created_at, balance, ...input } = a;
@@ -30,6 +35,7 @@ export function AccountDialog({
   loan?: boolean;
 }) {
   const save = useSave(),
+    currency = useCurrency(),
     [type, setType] = useState(existing?.type ?? (loan ? 'loan' : 'bank'));
   return (
     <Dialog
@@ -42,7 +48,7 @@ export function AccountDialog({
         const input = {
           name: str(f, 'name'),
           type,
-          currency: str(f, 'currency').toUpperCase(),
+          currency,
           opening_balance: type === 'loan' ? 0 : amount(f, 'opening_balance'),
           archived: existing?.archived ?? false,
           principal,
@@ -74,30 +80,19 @@ export function AccountDialog({
           placeholder={loan ? 'e.g. Car loan' : 'e.g. Everyday account'}
         />
       </Field>
-      <div className="form-grid">
-        <Field label="Account type">
-          <select
-            name="type"
-            value={type}
-            onChange={(e) => setType(e.target.value as Account['type'])}
-          >
-            <option value="bank">Bank · current</option>
-            <option value="savings">Savings</option>
-            <option value="cash">Cash</option>
-            <option value="investment">Investment cash</option>
-            <option value="loan">Loan</option>
-          </select>
-        </Field>
-        <Field label="Currency">
-          <input
-            name="currency"
-            required
-            pattern="[A-Za-z]{3}"
-            maxLength={3}
-            defaultValue={existing?.currency ?? 'INR'}
-          />
-        </Field>
-      </div>
+      <Field label="Account type">
+        <select
+          name="type"
+          value={type}
+          onChange={(e) => setType(e.target.value as Account['type'])}
+        >
+          <option value="bank">Bank · current</option>
+          <option value="savings">Savings</option>
+          <option value="cash">Cash</option>
+          <option value="investment">Investment cash</option>
+          <option value="loan">Loan</option>
+        </select>
+      </Field>
       {type !== 'loan' ? (
         <AmountField
           label="Opening balance"
@@ -179,22 +174,60 @@ export async function archiveAccount(save: ReturnType<typeof useSave>, a: Accoun
 }
 export function TransactionDialog({
   data,
+  userId,
   onClose,
   existing,
+  defaultAccountId,
 }: {
   data: Dataset;
+  userId: number;
   onClose: () => void;
   existing?: Transaction;
+  defaultAccountId?: string;
 }) {
   const save = useSave(),
-    [type, setType] = useState<Transaction['type']>(existing?.type ?? 'expense');
+    qc = useQueryClient(),
+    [type, setType] = useState<Transaction['type']>(existing?.type ?? 'expense'),
+    [refreshing, setRefreshing] = useState(false),
+    [refreshError, setRefreshError] = useState('');
   const accounts = data.accounts.filter((a) => !a.archived && a.type !== 'loan'),
     categories = data.categories.filter((c) => !c.archived && c.type === type);
+  const [accountId, setAccountId] = useState(
+      existing?.account_id ?? defaultAccountId ?? accounts[0]?.id ?? '',
+    ),
+    [toAccountId, setToAccountId] = useState(existing?.to_account_id ?? ''),
+    [categoryId, setCategoryId] = useState(existing?.category_id ?? categories[0]?.id ?? ''),
+    [amountValid, setAmountValid] = useState(!!existing),
+    [dateValid, setDateValid] = useState(true);
+  const complete =
+    amountValid &&
+    dateValid &&
+    accounts.some((a) => a.id === accountId) &&
+    (type === 'transfer'
+      ? toAccountId !== accountId && accounts.some((a) => a.id === toAccountId)
+      : categories.some((c) => c.id === categoryId));
+  const createAccount = () => {
+    window.open('/accounts?new=1', '_blank', 'noopener,noreferrer');
+  };
+  async function refreshChoices() {
+    setRefreshing(true);
+    setRefreshError('');
+    try {
+      const latest = await api<Dataset>('/snapshot');
+      qc.setQueryData(['snapshot', userId], latest);
+    } catch (e) {
+      setRefreshError((e as Error).message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
   return (
     <Dialog
       title={existing ? 'Edit transaction' : 'A little entry, a clearer picture'}
       onClose={onClose}
       submit={existing ? 'Save changes' : 'Add transaction'}
+      showCancel={false}
+      submitDisabled={!complete}
       onSubmit={async (f) => {
         await save.mutateAsync({
           path: existing ? `/transactions/${existing.id}` : '/transactions',
@@ -207,10 +240,7 @@ export function TransactionDialog({
             to_account_id: type === 'transfer' ? str(f, 'to_account_id') : null,
             category_id: type === 'transfer' ? null : str(f, 'category_id'),
             note: str(f, 'note'),
-            tags: str(f, 'tags')
-              .split(',')
-              .map((t) => t.trim())
-              .filter(Boolean),
+            tags: normalizeTags(str(f, 'tags').split(',')),
           },
         });
       }}
@@ -221,82 +251,94 @@ export function TransactionDialog({
             key={t}
             type="button"
             className={type === t ? 'active' : ''}
-            onClick={() => setType(t)}
+            onClick={() => {
+              if (t === type) return;
+              setType(t);
+              setCategoryId(
+                existing?.type === t
+                  ? (existing.category_id ?? '')
+                  : (data.categories.find((c) => !c.archived && c.type === t)?.id ?? ''),
+              );
+            }}
           >
             {t}
           </button>
         ))}
       </div>
-      <AmountField value={existing?.amount} />
+      <AmountField
+        value={existing?.amount}
+        onChange={(event) => setAmountValid(event.currentTarget.validity.valid)}
+      />
       <div className="form-grid">
-        <Field label="Account">
-          <select name="account_id" required defaultValue={existing?.account_id ?? accounts[0]?.id}>
-            <option value="" disabled>
-              Select account
-            </option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name} · {a.currency}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <SearchableSelect
+          label="Account"
+          name="account_id"
+          addLabel="Create account"
+          onAdd={createAccount}
+          refreshLabel="Refresh accounts"
+          onRefresh={() => void refreshChoices()}
+          refreshing={refreshing}
+          options={accounts.map((a) => ({ value: a.id, label: a.name }))}
+          value={accountId}
+          onChange={setAccountId}
+        />
         {type === 'transfer' ? (
-          <Field label="To account">
-            <select name="to_account_id" required defaultValue={existing?.to_account_id ?? ''}>
-              <option value="" disabled>
-                Select destination
-              </option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <SearchableSelect
+            label="To account"
+            name="to_account_id"
+            addLabel="Create destination account"
+            onAdd={createAccount}
+            refreshLabel="Refresh destination accounts"
+            onRefresh={() => void refreshChoices()}
+            refreshing={refreshing}
+            options={accounts.map((a) => ({ value: a.id, label: a.name }))}
+            value={toAccountId}
+            onChange={setToAccountId}
+          />
         ) : (
-          <Field label="Category">
-            <select
-              key={type}
-              name="category_id"
-              required
-              defaultValue={
-                existing?.type === type ? (existing.category_id ?? '') : categories[0]?.id
-              }
-            >
-              <option value="" disabled>
-                Select category
-              </option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <SearchableSelect
+            key={type}
+            label="Category"
+            name="category_id"
+            addLabel="Create category"
+            onAdd={() =>
+              window.open(`/settings?new-category=${type}`, '_blank', 'noopener,noreferrer')
+            }
+            refreshLabel="Refresh categories"
+            onRefresh={() => void refreshChoices()}
+            refreshing={refreshing}
+            options={categories.map((c) => ({ value: c.id, label: c.name }))}
+            value={categoryId}
+            onChange={setCategoryId}
+          />
         )}
         <Field label="Date">
-          <input name="date" type="date" required defaultValue={existing?.date ?? today()} />
-        </Field>
-        <Field label="Tags (comma separated)">
           <input
-            name="tags"
-            maxLength={500}
-            defaultValue={existing?.tags.join(', ')}
-            placeholder="home, essentials"
+            name="date"
+            type="date"
+            required
+            defaultValue={existing?.date ?? today()}
+            onChange={(event) => setDateValid(event.currentTarget.validity.valid)}
           />
         </Field>
+        <TagInput userId={userId} initialTags={existing?.tags} />
       </div>
       <Field label="Note">
-        <input
+        <textarea
           name="note"
+          rows={3}
           maxLength={1000}
           defaultValue={existing?.note}
-          placeholder="What was it for?"
+          placeholder="What was it for? Add any transaction details."
         />
       </Field>
       {!accounts.length && (
         <p className="form-error">Add an account first to record a transaction.</p>
+      )}
+      {refreshError && (
+        <p className="form-error" role="alert">
+          {refreshError}
+        </p>
       )}
     </Dialog>
   );
@@ -347,8 +389,8 @@ export function HoldingDialog({ existing, onClose }: { existing?: Holding; onClo
         />
       </Field>
       <p className="hint">
-        After adding a holding, record a buy entry and update its current value. Holdings use INR
-        and are tracked separately from account cash.
+        After adding a holding, record a buy entry and update its current value. Holdings are
+        tracked separately from account cash.
       </p>
     </Dialog>
   );
@@ -362,7 +404,8 @@ export function GoalDialog({
   existing?: Goal;
   onClose: () => void;
 }) {
-  const save = useSave();
+  const save = useSave(),
+    currency = useCurrency();
   return (
     <Dialog
       title={existing ? 'Edit your goal' : 'Give your savings a purpose'}
@@ -398,7 +441,7 @@ export function GoalDialog({
         <select name="account_id" defaultValue={existing?.account_id ?? ''}>
           <option value="">Manual contributions</option>
           {data.accounts
-            .filter((a) => a.type === 'savings' && a.currency === 'INR' && !a.archived)
+            .filter((a) => a.type === 'savings' && a.currency === currency && !a.archived)
             .map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name} · account balance
@@ -457,9 +500,11 @@ export function BudgetDialog({
 }
 export function CategoryDialog({
   existing,
+  defaultType = 'expense',
   onClose,
 }: {
   existing?: Category;
+  defaultType?: Category['type'];
   onClose: () => void;
 }) {
   const save = useSave();
@@ -483,7 +528,7 @@ export function CategoryDialog({
         <input name="name" required maxLength={120} autoFocus defaultValue={existing?.name} />
       </Field>
       <Field label="Type">
-        <select name="type" defaultValue={existing?.type ?? 'expense'}>
+        <select name="type" defaultValue={existing?.type ?? defaultType}>
           <option value="expense">Expense</option>
           <option value="income">Income</option>
         </select>

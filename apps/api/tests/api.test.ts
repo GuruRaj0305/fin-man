@@ -265,7 +265,13 @@ describe('finance CRUD', () => {
   });
   it('rejects invalid dates, references, categories, currencies and self-transfers', async () => {
     const a = await bank(),
-      b = await bank('USD account', 'USD');
+      b = await bank('Legacy USD account');
+    // Old workspaces can contain mixed currencies until the global setting is applied.
+    await db.prepare('UPDATE accounts SET currency=? WHERE id=?').bind('USD', b.id).run();
+    expect(
+      (await req('/accounts', 'POST', { name: 'USD account', type: 'bank', currency: 'USD' }))
+        .status,
+    ).toBe(400);
     for (const extra of [
       { date: '2026-02-30' },
       { category_id: 'cat_salary' },

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   WalletCards,
   Landmark,
@@ -8,6 +8,9 @@ import {
   Pencil,
   ArrowLeft,
   CalendarDays,
+  Archive,
+  ArchiveRestore,
+  Eye,
 } from 'lucide-react';
 import { accountBalance, monthlyInterest, type Account } from '@folio/shared';
 import { useWorkspace } from '../App';
@@ -30,11 +33,31 @@ import {
 
 export function Accounts() {
   const { data } = useWorkspace(),
+    [searchParams, setSearchParams] = useSearchParams(),
     [edit, setEdit] = useState<Account | true | null>(null),
     [showArchived, setShowArchived] = useState(false),
     [error, setError] = useState(''),
     save = useSave();
-  const accounts = data.accounts.filter((a) => a.type !== 'loan' && (showArchived || !a.archived));
+  const accounts = data.accounts.filter((a) => a.type !== 'loan' && (showArchived || !a.archived)),
+    creating = searchParams.get('new') === '1';
+  const deletionReasons = useMemo(() => {
+    const reasons = new Map<string, string>();
+    for (const transaction of data.transactions) {
+      const reason = 'This account has transactions. Archive it instead of deleting it.';
+      reasons.set(transaction.account_id, reason);
+      if (transaction.to_account_id) reasons.set(transaction.to_account_id, reason);
+    }
+    for (const goal of data.goals)
+      if (goal.account_id && !reasons.has(goal.account_id))
+        reasons.set(
+          goal.account_id,
+          'This account is linked to a savings goal. Unlink the goal before deleting it.',
+        );
+    for (const payment of data.loan_payments)
+      if (!reasons.has(payment.loan_id))
+        reasons.set(payment.loan_id, 'This loan has recorded payments and cannot be deleted.');
+    return reasons;
+  }, [data.transactions, data.goals, data.loan_payments]);
   return (
     <>
       <PageHeading
@@ -43,13 +66,17 @@ export function Accounts() {
         description="From the everyday essentials to the rainy day fund."
         action={<AddButton onClick={() => setEdit(true)}>Add account</AddButton>}
       />
-      <label className="checkbox-label">
+      <label className={`archive-toggle${showArchived ? ' is-active' : ''}`}>
         <input
+          className="archive-toggle-input"
           type="checkbox"
+          role="switch"
           checked={showArchived}
           onChange={(e) => setShowArchived(e.target.checked)}
         />
-        Show archived accounts
+        <Archive size={16} aria-hidden="true" />
+        <span>Show archived accounts</span>
+        <span className="archive-toggle-track" aria-hidden="true" />
       </label>
       {error && (
         <p className="form-error" role="alert">
@@ -74,7 +101,11 @@ export function Accounts() {
                   {a.archived ? 'Archived' : a.type === 'bank' ? 'Current account' : a.type}
                 </span>
               </div>
-              <h2>{a.name}</h2>
+              <h2>
+                <Link className="account-name-link" to={`/accounts/${a.id}`}>
+                  {a.name}
+                </Link>
+              </h2>
               <div className="account-balance">
                 <Money value={accountBalance(a, data.transactions)} currency={a.currency} />
               </div>
@@ -82,12 +113,28 @@ export function Accounts() {
                 Opening balance <Money value={a.opening_balance} currency={a.currency} />
               </p>
               <div className="card-footer">
-                <button className="text-btn" onClick={() => setEdit(a)}>
-                  <Pencil size={14} />
-                  Edit
+                <Link
+                  className="icon-btn"
+                  to={`/accounts/${a.id}`}
+                  aria-label={`View ${a.name} details`}
+                  title="View account details"
+                >
+                  <Eye size={15} aria-hidden="true" />
+                </Link>
+                <button
+                  className="icon-btn"
+                  aria-label={`Edit ${a.name}`}
+                  title="Edit account"
+                  disabled={!navigator.onLine}
+                  onClick={() => setEdit(a)}
+                >
+                  <Pencil size={15} aria-hidden="true" />
                 </button>
                 <button
-                  className="text-btn"
+                  className="icon-btn"
+                  aria-label={`${a.archived ? 'Restore' : 'Archive'} ${a.name}`}
+                  title={a.archived ? 'Restore account' : 'Archive account'}
+                  disabled={!navigator.onLine || save.isPending}
                   onClick={async () => {
                     try {
                       await archiveAccount(save, a);
@@ -96,9 +143,18 @@ export function Accounts() {
                     }
                   }}
                 >
-                  {a.archived ? 'Restore' : 'Archive'}
+                  {a.archived ? (
+                    <ArchiveRestore size={15} aria-hidden="true" />
+                  ) : (
+                    <Archive size={15} aria-hidden="true" />
+                  )}
                 </button>
-                <DeleteButton path={`/accounts/${a.id}`} />
+                <DeleteButton
+                  path={`/accounts/${a.id}`}
+                  label={`Delete ${a.name}`}
+                  iconOnly
+                  disabledReason={deletionReasons.get(a.id)}
+                />
               </div>
             </section>
           ))}
@@ -121,8 +177,18 @@ export function Accounts() {
           tracked holdings are separate assets.
         </p>
       </div>
-      {edit && (
-        <AccountDialog existing={edit === true ? undefined : edit} onClose={() => setEdit(null)} />
+      {(edit || creating) && (
+        <AccountDialog
+          existing={edit && edit !== true ? edit : undefined}
+          onClose={() => {
+            setEdit(null);
+            if (creating) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('new');
+              setSearchParams(next, { replace: true });
+            }
+          }}
+        />
       )}
     </>
   );

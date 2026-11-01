@@ -92,7 +92,7 @@ export function Reports() {
             />
           </label>
         )}
-        <span className="muted small">INR · Transfers excluded</span>
+        <span className="muted small">Transfers excluded</span>
       </div>
       {error && (
         <p className="form-error" role="alert">
